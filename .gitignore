@@ -37,3 +37,9 @@ pnpm-debug.log*
 coverage/
 .playwright/
 test-results/
+
+# Allow small audio test fixtures (override the *.wav / output rules above)
+!**/fixtures/
+!**/fixtures/**
+!**/__fixtures__/
+!**/__fixtures__/**
