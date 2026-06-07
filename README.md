@@ -51,6 +51,10 @@ curl http://localhost:3000/health   # → { "status": "ok" }
 | Piper ONNX | CPU fallback | MIT (voices vary) | onnxruntime / piper |
 | Chatterbox | Future high-quality | MIT | **PyTorch sidecar** (not in-process) |
 
+Browser Kokoro can run via [`kokoro-js`](https://www.npmjs.com/package/kokoro-js)
+(Apache-2.0) or [`@met4citizen/headtts`](https://www.npmjs.com/package/@met4citizen/headtts)
+(MIT, GPL-free G2P) — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#g2p--phonemizer--two-browser-paths).
+
 See [docs/LICENSING.md](docs/LICENSING.md) before adding any engine — the runtime
 **phonemizer** (espeak-ng, GPL-v3) is a commercial-license trap the model licenses
 do not cover. The **English MVP avoids it entirely**: use HeadTTS (CMU dict + NRL
