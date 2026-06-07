@@ -96,6 +96,14 @@ quality difference vs FP32. Browser first-load is 86 MB, not 500 MB.
 
 WebGPU is ~3–10× faster than WASM. WASM works universally as fallback.
 
+> ⚠️ **WebGPU corrupts non-fp32 Kokoro audio (static/crackle/破音).** Known
+> kokoro-js / transformers.js bug: on WebGPU, `dtype` fp16/q4/q8 produce
+> full-scale noise; only **fp32** is WebGPU-safe (and even that is dicey on some
+> mobile GPUs). **WASM produces clean audio for every dtype.** Rule enforced in
+> `apps/web` (`safeDevice()`): only fp32 may run on WebGPU; fp16/q4 are forced to
+> WASM. Refs: [transformers.js#1320](https://github.com/huggingface/transformers.js/issues/1320),
+> [hexgrad/kokoro#98](https://github.com/hexgrad/kokoro/issues/98).
+
 ### Browser deployment: COOP/COEP headers required
 `kokoro-js` / Transformers.js need `SharedArrayBuffer` (multithreaded WASM).
 The server MUST return:

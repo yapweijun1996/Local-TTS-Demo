@@ -1,18 +1,17 @@
 /**
- * Browser TTS — dual-engine: Kokoro ONNX (FP16/Q4) + Piper ONNX.
+ * Browser TTS — Kokoro ONNX (FP32/FP16/Q4) + Piper ONNX.
  *
- * Kokoro: 82M params, 24 kHz, ~8 languages, 28 voices, Apache 2.0.
- *   FP16 ~163 MB (recommended, better quality), Q4 ~86 MB (mobile).
- *   G2P: misaki English dict (Apache 2.0, GPL-free; no espeak-ng used).
+ * Kokoro: 82M params, 24 kHz, 28 voices, Apache 2.0.
+ *   FP32 ~326 MB (studio), FP16 ~163 MB (default), Q4 ~86 MB (mobile).
+ *   G2P: misaki English dict (Apache 2.0, GPL-free; no espeak-ng triggered).
  *
- * Piper: VITS-based, 22.05 kHz, 50+ languages, 100+ voices, MIT.
- *   ~50–75 MB per voice (downloaded on first use, cached in OPFS).
- *   Phonemizer: espeak-ng WASM bundled (GPLv3 — see docs/LICENSING.md).
+ * Piper: VITS-based, 22.05 kHz, 50+ languages, MIT.
+ *   ~50–75 MB per voice (HuggingFace → OPFS cache).
+ *   Phonemizer: espeak-ng WASM (GPLv3 — see docs/LICENSING.md).
  */
 
 import { KokoroTTS, type GenerateOptions } from "kokoro-js";
-// @ts-expect-error — @zahid0/piper-tts-web has mismatched types (d.ts exports from index, actual JS entry is piper-tts-web.js)
-import Piper from "@zahid0/piper-tts-web";
+import * as Piper from "@zahid0/piper-tts-web";
 
 // ── DOM refs ────────────────────────────────────────────────────────
 const textInput = document.getElementById("text-input") as HTMLTextAreaElement;
@@ -25,9 +24,11 @@ const playerRow = document.getElementById("player-row") as HTMLDivElement;
 const audioPlayer = document.getElementById("audio-player") as HTMLAudioElement;
 const downloadRow = document.getElementById("download-row") as HTMLDivElement;
 const downloadBtn = document.getElementById("download-btn") as HTMLButtonElement;
+const resetPiperBtn = document.getElementById("reset-piper-btn") as HTMLButtonElement;
 
 // ── Types ───────────────────────────────────────────────────────────
-type EngineId = "kokoro-fp16" | "kokoro-q4" | "piper";
+type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper";
+type KokoroDtype = "fp32" | "fp16" | "q4";
 type VoiceInfo = { id: string; name: string; language: string };
 
 interface EngineState {
@@ -38,30 +39,22 @@ interface EngineState {
 }
 
 // ── State ───────────────────────────────────────────────────────────
-let kokoroFP16: KokoroTTS | null = null;
-let kokoroQ4: KokoroTTS | null = null;
+const kokoroCache = new Map<KokoroDtype, KokoroTTS>();
 let currentWav: Blob | null = null;
 let currentEngine: EngineId = "kokoro-fp16";
 const KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
 const engines = new Map<EngineId, EngineState>([
-  ["kokoro-fp16", { id: "kokoro-fp16", label: "Kokoro FP16 (163 MB · best quality)", ready: false, voices: [] }],
-  ["kokoro-q4", { id: "kokoro-q4", label: "Kokoro Q4 (86 MB · fast)", ready: false, voices: [] }],
-  ["piper", { id: "piper", label: "Piper (50+ langs · MIT license)", ready: false, voices: [] }],
+  ["kokoro-fp32", { id: "kokoro-fp32", label: "Kokoro FP32 (326 MB · studio quality)", ready: false, voices: [] }],
+  ["kokoro-fp16", { id: "kokoro-fp16", label: "Kokoro FP16 (163 MB · best balance)", ready: false, voices: [] }],
+  ["kokoro-q4",  { id: "kokoro-q4",  label: "Kokoro Q4 (86 MB · fast)",           ready: false, voices: [] }],
+  ["piper",       { id: "piper",      label: "Piper (50+ langs · MIT license)",     ready: false, voices: [] }],
 ]);
 
 // ── Helpers ─────────────────────────────────────────────────────────
-function showProgress(msg: string): void {
-  progressEl.textContent = msg;
-}
-function showError(msg: string): void {
-  errorEl.textContent = msg;
-  errorEl.classList.add("visible");
-}
-function clearError(): void {
-  errorEl.textContent = "";
-  errorEl.classList.remove("visible");
-}
+function showProgress(msg: string): void { progressEl.textContent = msg; }
+function showError(msg: string): void { errorEl.textContent = msg; errorEl.classList.add("visible"); }
+function clearError(): void { errorEl.textContent = ""; errorEl.classList.remove("visible"); }
 function setBusy(busy: boolean): void {
   generateBtn.disabled = busy;
   textInput.disabled = busy;
@@ -74,74 +67,99 @@ function setBusy(busy: boolean): void {
 async function probeDevice(): Promise<"webgpu" | "wasm"> {
   try {
     const gpu = (navigator as unknown as Record<string, unknown>).gpu as
-      | { requestAdapter?: () => Promise<unknown> }
-      | undefined;
-    const adapter = gpu?.requestAdapter ? await gpu.requestAdapter() : null;
-    return adapter ? "webgpu" : "wasm";
-  } catch {
-    return "wasm";
-  }
+      | { requestAdapter?: () => Promise<unknown> } | undefined;
+    return (await gpu?.requestAdapter?.()) ? "webgpu" : "wasm";
+  } catch { return "wasm"; }
 }
 
-// ── Kokoro loader ───────────────────────────────────────────────────
-async function loadKokoro(dtype: "fp16" | "q4"): Promise<KokoroTTS> {
-  const cache = dtype === "fp16" ? kokoroFP16 : kokoroQ4;
-  if (cache) return cache;
+// ── Kokoro ──────────────────────────────────────────────────────────
+const KOKORO_SIZES: Record<KokoroDtype, string> = { fp32: "≈326 MB", fp16: "≈163 MB", q4: "≈86 MB" };
 
-  const device = await probeDevice();
-  const size = dtype === "fp16" ? "≈163 MB" : "≈86 MB";
-  showProgress(`Loading Kokoro ${dtype.toUpperCase()} (${size}) via ${device.toUpperCase()}…`);
+/**
+ * Pick a SAFE device for the requested dtype.
+ *
+ * Known kokoro-js / transformers.js bug: WebGPU produces corrupted/static audio
+ * for every dtype except fp32 (and even fp32 is dicey on some mobile GPUs).
+ * WASM produces clean audio for all dtypes. So: only fp32 may use WebGPU; every
+ * other dtype is forced onto WASM. Refs: transformers.js#1320, hexgrad/kokoro#98.
+ */
+async function safeDevice(dtype: KokoroDtype): Promise<"webgpu" | "wasm"> {
+  if (dtype !== "fp32") return "wasm";
+  return probeDevice(); // fp32 is the only WebGPU-safe dtype
+}
 
+async function loadKokoro(dtype: KokoroDtype): Promise<KokoroTTS> {
+  if (kokoroCache.has(dtype)) return kokoroCache.get(dtype)!;
+  const device = await safeDevice(dtype);
+  showProgress(`Loading Kokoro ${dtype.toUpperCase()} (${KOKORO_SIZES[dtype]}) via ${device.toUpperCase()}…`);
   const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, { dtype, device });
-
-  if (dtype === "fp16") kokoroFP16 = tts;
-  else kokoroQ4 = tts;
-
+  kokoroCache.set(dtype, tts);
   return tts;
 }
 
 function kokoroVoices(tts: KokoroTTS): VoiceInfo[] {
   return Object.entries(tts.voices).map(([id, info]) => ({
-    id,
-    name: info.name,
-    language: info.language,
+    id, name: info.name, language: info.language,
   }));
 }
 
-// ── Piper loader ────────────────────────────────────────────────────
+// ── Piper ───────────────────────────────────────────────────────────
 interface PiperVoice {
-  key: string;
-  name: string;
-  language: { code: string; name_english: string };
+  key: string; name: string; language: { code: string; name_english: string };
   quality: string;
 }
 
-async function loadPiper(): Promise<VoiceInfo[]> {
+function getPiper(): { voices: () => Promise<PiperVoice[]>; download: (id: string, cb?: (p: { total: number; loaded: number }) => void) => Promise<void>; predict: (cfg: { text: string; voiceId: string }) => Promise<Blob>; remove: (id: string) => Promise<void>; flush: () => Promise<void> } {
+  return Piper as unknown as ReturnType<typeof getPiper>;
+}
+
+async function loadPiperVoices(): Promise<VoiceInfo[]> {
   showProgress("Loading Piper voice list…");
-  const P = Piper as unknown as {
-    voices: () => Promise<PiperVoice[]>;
-    download: (id: string, cb?: (p: { total: number; loaded: number }) => void) => Promise<void>;
-    predict: (cfg: { text: string; voiceId: string }) => Promise<Blob>;
-  };
-  const allVoices = await P.voices();
-  // Prefer English high/medium quality
-  const enVoices = allVoices.filter((v) => v.key.startsWith("en_US") || v.key.startsWith("en_GB"));
-  const rest = allVoices.filter((v) => !enVoices.includes(v));
+  const all = await getPiper().voices();
+  const en = all.filter((v) => v.key.startsWith("en_US") || v.key.startsWith("en_GB"));
+  const rest = all.filter((v) => !en.includes(v));
   const sorted = [
-    ...enVoices.filter((v) => v.quality === "high"),
-    ...enVoices.filter((v) => v.quality === "medium"),
-    ...enVoices.filter((v) => v.quality === "low"),
+    ...en.filter((v) => v.quality === "high"),
+    ...en.filter((v) => v.quality === "medium"),
     ...rest.filter((v) => v.quality === "high"),
     ...rest.filter((v) => v.quality === "medium"),
   ];
   return sorted.map((v) => ({
-    id: v.key,
-    name: `${v.name} (${v.language.name_english})`,
-    language: v.language.code,
+    id: v.key, name: `${v.name} (${v.language.name_english})`, language: v.language.code,
   }));
 }
 
-// ── Populate UI ─────────────────────────────────────────────────────
+/** sessionStorage flag: a cache clear was blocked by OPFS locks; finish it after reload. */
+const PIPER_RESET_FLAG = "piper-reset-pending";
+
+async function resetPiperCache(): Promise<void> {
+  showProgress("Clearing Piper model cache…");
+  try {
+    await getPiper().flush();
+    const state = engines.get("piper")!;
+    state.ready = false;
+    state.voices = [];
+    showProgress("Piper cache cleared. Select a voice and generate to re-download.");
+  } catch (e) {
+    // OPFS refuses to delete a model file while the Piper worker still holds an
+    // open SyncAccessHandle (NoModificationAllowedError / InvalidStateError).
+    // Reloading drops every OPFS handle; init() re-runs flush on the clean load.
+    const name = e instanceof Error ? e.name : "";
+    if (name === "NoModificationAllowedError" || name === "InvalidStateError") {
+      sessionStorage.setItem(PIPER_RESET_FLAG, "1");
+      showProgress("Releasing model locks — reloading to finish clearing cache…");
+      location.reload();
+      return;
+    }
+    // Cache was empty or the API is unavailable — treat as already cleared.
+    const state = engines.get("piper")!;
+    state.ready = false;
+    state.voices = [];
+    showProgress("Piper cache cleared (was already empty).");
+  }
+}
+
+// ── UI population ───────────────────────────────────────────────────
 function populateVoiceDropdown(voices: VoiceInfo[]): void {
   voiceSelect.innerHTML = "";
   for (const v of voices) {
@@ -150,7 +168,6 @@ function populateVoiceDropdown(voices: VoiceInfo[]): void {
     opt.textContent = `${v.name} (${v.language})`;
     voiceSelect.appendChild(opt);
   }
-  // Prefer first "high" or first available
   const enHigh = voices.find((v) => v.language?.startsWith("en") && v.id.includes("high"));
   if (enHigh) voiceSelect.value = enHigh.id;
   else if (voices.length > 0) voiceSelect.value = voices[0]!.id;
@@ -160,30 +177,24 @@ async function onEngineSwitch(): Promise<void> {
   const id = engineSelect.value as EngineId;
   currentEngine = id;
   const state = engines.get(id)!;
-
   clearError();
   setBusy(true);
+  resetPiperBtn.style.display = id === "piper" ? "inline-block" : "none";
 
   try {
-    if (id === "kokoro-fp16") {
-      const tts = await loadKokoro("fp16");
-      if (!state.ready) { state.voices = kokoroVoices(tts); state.ready = true; }
-      populateVoiceDropdown(state.voices);
-    } else if (id === "kokoro-q4") {
-      const tts = await loadKokoro("q4");
+    if (id.startsWith("kokoro-")) {
+      const dtype = id.replace("kokoro-", "") as KokoroDtype;
+      const tts = await loadKokoro(dtype);
       if (!state.ready) { state.voices = kokoroVoices(tts); state.ready = true; }
       populateVoiceDropdown(state.voices);
     } else if (id === "piper") {
-      if (!state.ready) { state.voices = await loadPiper(); state.ready = true; }
+      if (!state.ready) { state.voices = await loadPiperVoices(); state.ready = true; }
       populateVoiceDropdown(state.voices);
     }
     showProgress("Ready. Type text and click Generate.");
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown error.";
-    showError(`Engine load failed: ${msg}`);
-  } finally {
-    setBusy(false);
-  }
+    showError(`Engine load failed: ${e instanceof Error ? e.message : "Unknown error"}`);
+  } finally { setBusy(false); }
 }
 
 // ── Generate ────────────────────────────────────────────────────────
@@ -193,32 +204,23 @@ async function onGenerate(): Promise<void> {
   if (!text) { showError("Please enter some text."); return; }
 
   setBusy(true);
-  showProgress("Generating…");
 
   try {
     let wavBuffer: ArrayBuffer;
     const id = currentEngine;
 
-    if (id === "kokoro-fp16" || id === "kokoro-q4") {
-      const dtype = id === "kokoro-fp16" ? "fp16" : "q4";
+    if (id.startsWith("kokoro-")) {
+      const dtype = id.replace("kokoro-", "") as KokoroDtype;
       const tts = await loadKokoro(dtype);
       const voice = (voiceSelect.value || undefined) as GenerateOptions["voice"];
-      const rawAudio = await tts.generate(text, { voice });
-      wavBuffer = rawAudio.toWav();
+      showProgress("Generating with Kokoro…");
+      const raw = await tts.generate(text, { voice });
+      wavBuffer = raw.toWav();
     } else {
-      // Piper
-      const P = Piper as unknown as {
-        download: (id: string, cb?: (p: { total: number; loaded: number }) => void) => Promise<void>;
-        predict: (cfg: { text: string; voiceId: string }) => Promise<Blob>;
-      };
+      // Piper — with auto-retry on corrupted model
+      const P = getPiper();
       const voiceId = voiceSelect.value;
-      showProgress("Downloading Piper voice model (first time only)…");
-      await P.download(voiceId, (p) => {
-        if (p.total > 0) showProgress(`Downloading voice… ${Math.round((p.loaded / p.total) * 100)}%`);
-      });
-      showProgress("Synthesizing with Piper…");
-      const blob = await P.predict({ text, voiceId });
-      wavBuffer = await blob.arrayBuffer();
+      wavBuffer = await piperGenerate(P, text, voiceId, false);
     }
 
     const blob = new Blob([wavBuffer], { type: "audio/wav" });
@@ -226,7 +228,6 @@ async function onGenerate(): Promise<void> {
     if (audioPlayer.src) URL.revokeObjectURL(audioPlayer.src);
     audioPlayer.src = url;
     playerRow.style.display = "block";
-
     currentWav = blob;
     downloadRow.classList.add("visible");
     showProgress("✅ Done!");
@@ -234,39 +235,69 @@ async function onGenerate(): Promise<void> {
     const msg = e instanceof Error ? e.message : "Unknown error.";
     showError(msg);
     showProgress("");
-  } finally {
-    setBusy(false);
+  } finally { setBusy(false); }
+}
+
+async function piperGenerate(
+  P: ReturnType<typeof getPiper>, text: string, voiceId: string, isRetry: boolean,
+): Promise<ArrayBuffer> {
+  try {
+    if (!isRetry) {
+      showProgress("Downloading Piper voice model (first time only)…");
+      await P.download(voiceId, (p) => {
+        if (p.total > 0) showProgress(`Downloading voice… ${Math.round((p.loaded / p.total) * 100)}%`);
+      });
+    }
+    showProgress("Synthesizing with Piper…");
+    const blob = await P.predict({ text, voiceId });
+    return blob.arrayBuffer();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    // ONNX protobuf error → model corrupted → clear cache & retry once
+    if (!isRetry && (msg.includes("protobuf") || msg.includes("No graph"))) {
+      showProgress("Piper model corrupted. Clearing cache & re-downloading…");
+      await P.remove(voiceId).catch(() => {});
+      return piperGenerate(P, text, voiceId, true);
+    }
+    throw e;
   }
 }
 
+// ── Download ────────────────────────────────────────────────────────
 function onDownload(): void {
   if (!currentWav) return;
   const url = URL.createObjectURL(currentWav);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = "tts-output.wav";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  a.href = url; a.download = "tts-output.wav";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// ── PWA service worker ──────────────────────────────────────────────
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
 
 // ── Init ────────────────────────────────────────────────────────────
 async function init(): Promise<void> {
+  // If a previous cache clear was blocked by OPFS locks, the page reloaded with
+  // this flag set. Now (clean load, no Piper handle open yet) flush succeeds.
+  if (sessionStorage.getItem(PIPER_RESET_FLAG)) {
+    sessionStorage.removeItem(PIPER_RESET_FLAG);
+    try { await getPiper().flush(); showProgress("Piper cache cleared."); } catch { /* already released/empty */ }
+  }
+
   engineSelect.innerHTML = "";
   for (const [id, state] of engines) {
     const opt = document.createElement("option");
-    opt.value = id;
-    opt.textContent = state.label;
+    opt.value = id; opt.textContent = state.label;
     engineSelect.appendChild(opt);
   }
   engineSelect.value = "kokoro-fp16";
+  resetPiperBtn.style.display = "none";
 
-  try {
-    await onEngineSwitch();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown error.";
-    showError(`Startup failed: ${msg}`);
+  try { await onEngineSwitch(); } catch (e) {
+    showError(`Startup failed: ${e instanceof Error ? e.message : "Unknown error"}`);
     generateBtn.disabled = true;
   }
 }
@@ -275,5 +306,5 @@ async function init(): Promise<void> {
 engineSelect.addEventListener("change", onEngineSwitch);
 generateBtn.addEventListener("click", onGenerate);
 downloadBtn.addEventListener("click", onDownload);
-
+resetPiperBtn.addEventListener("click", resetPiperCache);
 init();
