@@ -16,6 +16,10 @@ permissions:
   pages: write
   id-token: write
 
+# Run JS actions on Node.js 24 (Node 20 is deprecated on the runners from ~2026-06-16).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 # Allow one concurrent deployment; cancel in-progress runs for the same ref.
 concurrency:
   group: pages
