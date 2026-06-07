@@ -34,7 +34,7 @@ export function normalizeText(text: string): string {
  * `EMPTY_TEXT` or `TEXT_TOO_LONG`. Returns the normalized, validated text.
  */
 export function validateText(raw: string, opts: ValidateOptions): string {
-  const text = normalizeText(raw ?? "");
+  const text = normalizeText(raw);
   if (text.length === 0) {
     throw new TtsError("EMPTY_TEXT", "Text is empty.");
   }

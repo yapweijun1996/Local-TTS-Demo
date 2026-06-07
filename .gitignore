@@ -43,3 +43,4 @@ test-results/
 !**/fixtures/**
 !**/__fixtures__/
 !**/__fixtures__/**
+.gstack/
