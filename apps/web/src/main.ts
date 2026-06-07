@@ -273,9 +273,21 @@ function onDownload(): void {
   URL.revokeObjectURL(url);
 }
 
-// ── PWA service worker ──────────────────────────────────────────────
+// ── Service worker: COOP/COEP (cross-origin isolation) + app-shell cache ────
+// On a static host (GitHub Pages) we cannot set COOP/COEP headers, so the SW
+// injects them. The very first page load is NOT yet isolated; once the SW takes
+// control we reload once so SharedArrayBuffer / multithreaded WASM become
+// available. Relative path → correct scope under any base.
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
+  navigator.serviceWorker
+    .register("sw.js")
+    .then((reg) => {
+      // SW is active but not yet controlling this page → reload once to isolate.
+      if (!self.crossOriginIsolated && reg.active && !navigator.serviceWorker.controller) {
+        window.location.reload();
+      }
+    })
+    .catch(() => {});
 }
 
 // ── Init ────────────────────────────────────────────────────────────
