@@ -88,11 +88,37 @@ async function safeDevice(dtype: KokoroDtype): Promise<"webgpu" | "wasm"> {
   return probeDevice(); // fp32 is the only WebGPU-safe dtype
 }
 
+function fmtMB(bytes?: number): string {
+  if (!bytes || bytes <= 0) return "";
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 async function loadKokoro(dtype: KokoroDtype): Promise<KokoroTTS> {
   if (kokoroCache.has(dtype)) return kokoroCache.get(dtype)!;
   const device = await safeDevice(dtype);
-  showProgress(`Loading Kokoro ${dtype.toUpperCase()} (${KOKORO_SIZES[dtype]}) via ${device.toUpperCase()}…`);
-  const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, { dtype, device });
+  const label = `Kokoro ${dtype.toUpperCase()} (${KOKORO_SIZES[dtype]}) · ${device.toUpperCase()}`;
+  showProgress(`Loading ${label}…`);
+
+  // transformers.js fires progress_callback per file: 'initiate' → 'download' →
+  // 'progress' (with progress %, loaded/total bytes) → 'done'. Surface a % bar so
+  // the (86–326 MB) first-load download isn't a silent wait.
+  const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, {
+    dtype,
+    device,
+    progress_callback: (raw) => {
+      const e = raw as unknown as {
+        status?: string; file?: string; progress?: number; loaded?: number; total?: number;
+      };
+      if (e.status === "progress" && typeof e.progress === "number") {
+        const pct = Math.min(100, Math.round(e.progress));
+        const size = e.total ? ` (${fmtMB(e.loaded)} / ${fmtMB(e.total)})` : "";
+        showProgress(`Downloading ${label} — ${pct}%${size}`);
+      } else if (e.status === "done") {
+        showProgress(`Preparing ${label}… (compiling model)`);
+      }
+    },
+  });
+
   kokoroCache.set(dtype, tts);
   return tts;
 }
