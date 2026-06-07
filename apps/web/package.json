@@ -1,0 +1,22 @@
+{
+  "name": "@local-tts/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@local-tts/core": "workspace:*",
+    "@zahid0/piper-tts-web": "^1.0.5",
+    "kokoro-js": "^1.2.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0",
+    "vite-plugin-cross-origin-isolation": "^0.1.3"
+  }
+}

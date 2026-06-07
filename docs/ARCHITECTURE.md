@@ -113,6 +113,10 @@ See [`../PRD.md`](../PRD.md#11-engine-adapter-design). Notes:
 - Adapters register in an **engine registry** keyed by id; the registry also holds
   license metadata surfaced by `GET /api/engines`.
 
+> **Naturalness tiers:** browser/CPU models top out at Kokoro (82M is the small-model
+> ceiling). Human-level voice requires GPU LLM-TTS run as a sidecar — see
+> [`ENGINES.md`](ENGINES.md). The sidecar pattern below is the slot for those.
+
 ### Chatterbox is NOT an in-process adapter — decided
 Chatterbox is a **PyTorch** model (GPU-friendly), not ONNX. It cannot load inside
 `onnxruntime-node`. It must run as a **separate Python sidecar service**; the Node

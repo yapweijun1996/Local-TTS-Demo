@@ -24,6 +24,7 @@ Browser-first TTS   →   Node.js TTS API   →   Docker self-hosted deployment
 |-----|----------------|
 | [PRD.md](PRD.md) | Product requirements (SSOT) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, the G2P pipeline, concurrency model, eng-review decisions |
+| [docs/ENGINES.md](docs/ENGINES.md) | Engine/model catalog by naturalness tier + license; what to add, what to avoid |
 | [docs/API.md](docs/API.md) | HTTP API reference (endpoints, request/response, error codes) |
 | [docs/LICENSING.md](docs/LICENSING.md) | Commercial-license verification, the espeak-ng GPL caveat, per-model metadata |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local setup, build, test, env vars, project layout |

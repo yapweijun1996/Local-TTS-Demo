@@ -106,6 +106,35 @@ Every engine ships `engines/<id>/license.json`:
 > carry different licenses (some require attribution). Verify and record each voice
 > you ship, not just the engine.
 
+## ⛔ Commercially-incompatible models — DO NOT use
+Strong-quality models that fail the commercial gate. Listed so nobody is tempted
+to add them; the engine catalog is in [`ENGINES.md`](ENGINES.md). Verified
+2026-06-07.
+
+| Model | License | Why blocked |
+|-------|---------|-------------|
+| XTTS-v2 (Coqui) | Coqui Public Model License (CPML) | Non-commercial without a separate paid license |
+| F5-TTS | CC-BY-NC 4.0 | Non-commercial — weights and the Emilia training dataset |
+| Fish Speech / OpenAudio | Fish Audio Research License | Free for research/non-commercial; commercial only via their hosted API |
+| Meta MMS / some community VITS | CC-BY-NC 4.0 | Non-commercial |
+
+> These are "unknown / non-commercial" per §"Allowed vs not allowed" above and are
+> rejected at the verification gate regardless of audio quality.
+
+## ✅ Commercial-friendly engines we may add (verified 2026-06-07)
+Beyond Kokoro / Piper / Chatterbox already in scope:
+
+| Engine | License | Runtime | Notes |
+|--------|---------|---------|-------|
+| Orpheus TTS | Apache-2.0 | GPU sidecar | Llama-based, emotive |
+| Higgs Audio V2 | Apache-2.0 | GPU sidecar | Multi-speaker |
+| Dia 1.6B | Apache-2.0 | GPU sidecar | Dialogue |
+| MeloTTS | MIT | CPU (Python/ONNX) | Multilingual, VITS |
+| Kitten TTS | Apache-2.0 | CPU / browser | 15–25 MB ultra-light |
+
+Each still needs the full 7-layer check (incl. per-voice and runtime phonemizer)
+before it reaches the registry.
+
 ## Risk (PRD §22.1 expanded)
 Code license ≠ weight license ≠ voice license ≠ phonemizer license. All four must
 clear commercial use independently before an engine reaches the registry.
