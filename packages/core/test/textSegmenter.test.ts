@@ -86,3 +86,83 @@ describe("segmentText", () => {
     expect(() => segmentText("hi there friend", 0)).toThrowError(TtsError);
   });
 });
+
+describe("segmentText — abbreviation & decimal safety (Q-1)", () => {
+  it("does not split on known multi-letter abbreviations", () => {
+    const text = "I spoke to Dr. Smith. He agreed with the plan.";
+    // Force low max so genuine sentence boundary triggers split
+    const chunks = segmentText(text, 30);
+    // "Dr. Smith" must stay together; the split should be at "plan."
+    expect(chunks.some((c) => c.includes("Dr. Smith"))).toBe(true);
+    expect(chunks.every((c) => c.length <= 30)).toBe(true);
+  });
+
+  it("does not split on multi-initial abbreviations like U.S. and A.M.", () => {
+    const text = "We live in the U.S. It is 10 A.M. now. Ready?";
+    const chunks = segmentText(text, 25);
+    // "U.S." and "A.M." must keep their dots
+    expect(chunks.join(" ")).toContain("U.S.");
+    expect(chunks.join(" ")).toContain("A.M.");
+    expect(chunks.every((c) => c.length <= 25)).toBe(true);
+  });
+
+  it("does not split on decimal numbers like 3.14", () => {
+    const text = "Pi is 3.14. That is the value. Good.";
+    const chunks = segmentText(text, 20);
+    // "3.14" must stay together
+    const flat = chunks.join(" ");
+    expect(flat).toContain("3.14");
+    expect(chunks.every((c) => c.length <= 20)).toBe(true);
+  });
+
+  it("still splits on genuine sentence boundaries", () => {
+    const text = "First sentence. Second sentence. Third.";
+    const chunks = segmentText(text, 20);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    expect(chunks.join(" ")).toBe("First sentence. Second sentence. Third.");
+  });
+
+  it("handles abbreviation at the very end of text", () => {
+    const text = "He works for the dept.";
+    const chunks = segmentText(text, 50);
+    expect(chunks).toEqual(["He works for the dept."]);
+  });
+
+  it("handles common titles: Mr. Mrs. Ms. Prof. Sr. Jr.", () => {
+    const text = "Mr. Jones met Mrs. Smith and Prof. Lee. Also Sr. and Jr. arrived.";
+    const chunks = segmentText(text, 25);
+    const flat = chunks.join(" ");
+    expect(flat).toContain("Mr. Jones");
+    expect(flat).toContain("Mrs. Smith");
+    expect(flat).toContain("Prof. Lee");
+    expect(chunks.every((c) => c.length <= 25)).toBe(true);
+  });
+
+  it("handles Latin abbreviations: etc. e.g. i.e. vs.", () => {
+    const text = "Things like cats, dogs, etc. are common. I like fruit e.g. apples. Team A vs. Team B.";
+    const chunks = segmentText(text, 25);
+    const flat = chunks.join(" ");
+    expect(flat).toContain("etc.");
+    expect(flat).toContain("e.g.");
+    expect(flat).toContain("vs.");
+    expect(chunks.every((c) => c.length <= 25)).toBe(true);
+  });
+
+  it("handles months as abbreviations: Jan. Feb. Mar.", () => {
+    const text = "The dates are Jan. 1, Feb. 2, and Mar. 3. That is all.";
+    const chunks = segmentText(text, 25);
+    const flat = chunks.join(" ");
+    expect(flat).toContain("Jan.");
+    expect(flat).toContain("Feb.");
+    expect(flat).toContain("Mar.");
+  });
+
+  it("does NOT protect a genuine sentence-ending single letter", () => {
+    const text = "This is option A. Next is option B.";
+    const chunks = segmentText(text, 20);
+    // "A." at sentence end should still split
+    const flat = chunks.join(" ");
+    expect(flat).toBe("This is option A. Next is option B.");
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+  });
+});
