@@ -69,5 +69,5 @@ non-English languages and is kept as an opt-in plugin, never bundled in core.
 - Configurable model path (`TTS_MODEL_PATH`).
 
 ## License
-Application code: see `LICENSE` (to be added — target MIT). Model/voice/phonemizer
+Application code: MIT (see [`LICENSE`](LICENSE)). Model/voice/phonemizer
 licenses are tracked individually in [docs/LICENSING.md](docs/LICENSING.md).

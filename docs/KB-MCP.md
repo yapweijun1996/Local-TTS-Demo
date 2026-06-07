@@ -9,6 +9,7 @@ This project persists durable knowledge to the **KB MCP** server
 | KB name | `local-tts-demo` |
 | KB id | `83b9ecff-e579-461c-8842-f23a379a1300` |
 | Visibility | user |
+| License | MIT (application code only; models/voices/phonemizers carry their own licenses — see [LICENSING.md](LICENSING.md)) |
 | Purpose | PRD decisions, eng-review findings, licensing traps, build status |
 
 ## Write routing (per global SSOT rules)
