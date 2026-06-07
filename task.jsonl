@@ -26,5 +26,7 @@
 {"id":"P4-1","phase":4,"title":"Piper ONNX Node adapter + per-voice license.json metadata","status":"todo","deps":["P2-2"],"acceptance":"engine switch to piper works; each voice has verified license metadata"}
 {"id":"P4-2","phase":4,"title":"Engine switching via TTS_ENGINE without rewriting API or UI","status":"todo","deps":["P4-1"],"acceptance":"changing default engine needs only config; UI/API unchanged"}
 {"id":"P4-3","phase":4,"title":"Optional Chatterbox PyTorch sidecar + thin Node HTTP adapter","status":"todo","deps":["P4-2"],"acceptance":"chatterbox adapter calls sidecar; documented as separate service, GPU optional"}
-{"id":"DOC-1","phase":0,"title":"Add LICENSE (target MIT) and per-engine license metadata files","status":"todo","deps":[],"acceptance":"root LICENSE present; each engine has license.json per docs/LICENSING.md"}
+{"id":"DOC-1","phase":0,"title":"Add root LICENSE (MIT)","status":"done","deps":[],"acceptance":"root LICENSE present; app code MIT, models/voices/phonemizers keep own licenses (noted in LICENSE + docs/LICENSING.md)"}
 {"id":"DOC-2","phase":0,"title":"Keep README/docs/task.jsonl in sync as phases land","status":"in_progress","deps":[],"acceptance":"docs reflect shipped reality; DoD checklist in PRD §23 tracked"}
+{"id":"DOC-3","phase":0,"title":"Per-engine license.json metadata files (engines/<id>/license.json)","status":"todo","deps":[],"acceptance":"each registered engine ships license.json per docs/LICENSING.md; surfaced by GET /api/engines"}
+{"id":"Q-1","phase":1,"title":"Segmenter: handle abbreviations / decimals (e.g. 'Dr.', '3.14') to avoid mis-splits","status":"todo","deps":["P0-3"],"acceptance":"segmentText does not split on common abbreviations or decimal points; unit tests added"}
