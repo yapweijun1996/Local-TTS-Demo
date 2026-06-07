@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# TTS model files (large; mount or download locally — keep the folder, not the weights)
+models/*
+!models/.gitkeep
+
+# Generated audio output (privacy: never commit user-generated audio)
+output/
+*.wav
+*.mp3
+*.ogg
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+coverage/
+.playwright/
+test-results/

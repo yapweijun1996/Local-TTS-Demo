@@ -63,8 +63,8 @@ pnpm test:e2e        # browser (Playwright) — use a tiny test model, not 90MB
   config loading (pure, fast).
 - **API:** spin up the server, hit `/health`, `/api/voices`, `/api/engines`,
   `/api/tts`; assert empty-text / long-text / invalid-engine rejections.
-- **Browser e2e:** loading the real ~90 MB Kokoro model in CI is slow and flaky —
-  mock the engine or use a tiny fixture model. Assert: app loads, input works,
+- **Browser e2e:** loading the real Kokoro model in CI is slow and flaky (Q4 ~86 MB,
+  FP16 default ~163 MB) — mock the engine or use a tiny fixture model. Assert: app loads, input works,
   Generate toggles busy state, audio player appears, error appears on model fail.
 - **Docker:** `docker compose up --build` then curl `/health`.
 
