@@ -44,21 +44,50 @@ export function getPiper() {
 export async function loadPiperVoices(): Promise<VoiceInfo[]> {
   showProgress("Loading Piper voice list…");
   const all = await getPiper().voices();
-  const en = all.filter(
-    (v) => v.key.startsWith("en_US") || v.key.startsWith("en_GB"),
-  );
-  const rest = all.filter((v) => !en.includes(v));
-  const sorted = [
-    ...en.filter((v) => v.quality === "high"),
-    ...en.filter((v) => v.quality === "medium"),
-    ...rest.filter((v) => v.quality === "high"),
-    ...rest.filter((v) => v.quality === "medium"),
-  ];
-  return sorted.map((v) => ({
-    id: v.key,
-    name: `${v.name} (${v.language.name_english})`,
-    language: v.language.code,
-  }));
+
+  // Quality rank for in-language sorting: high → medium → low.
+  const qualityRank = (q: string): number => {
+    if (q === "high") return 0;
+    if (q === "medium") return 1;
+    return 2;
+  };
+
+  // Group voices by language (English name as label).
+  const groups = new Map<string, { label: string; code: string; voices: typeof all }>();
+  for (const v of all) {
+    const key = v.language.name_english;
+    if (!groups.has(key)) {
+      groups.set(key, { label: key, code: v.language.code, voices: [] });
+    }
+    groups.get(key)!.voices.push(v);
+  }
+
+  // Sort each language group by quality.
+  for (const [, g] of groups) {
+    g.voices.sort((a, b) => qualityRank(a.quality) - qualityRank(b.quality));
+  }
+
+  // Language order: English first, then alphabetical by language name.
+  const langOrder = [...groups.keys()].sort((a, b) => {
+    if (a === "English") return -1;
+    if (b === "English") return 1;
+    return a.localeCompare(b);
+  });
+
+  // Flatten — each item carries its languageLabel for optgroup rendering.
+  const sorted: VoiceInfo[] = [];
+  for (const lang of langOrder) {
+    const g = groups.get(lang)!;
+    for (const v of g.voices) {
+      sorted.push({
+        id: v.key,
+        name: v.name,
+        language: v.language.code,
+        languageLabel: g.label,
+      });
+    }
+  }
+  return sorted;
 }
 
 // ── Cache reset ───────────────────────────────────────────────────────

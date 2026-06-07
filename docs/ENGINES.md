@@ -19,8 +19,8 @@ Runs in `apps/web` (onnxruntime-web) or a CPU Node process. Ships today.
 
 | Engine | License | Naturalness | Notes |
 |--------|---------|-------------|-------|
-| **Kokoro ONNX** (default) | Apache-2.0 | ★★★★ (best small) | 82M, 24 kHz, ~8 langs, 28 voices. GPL-free EN via misaki. **Use FP16 (163 MB), not Q4, for quality.** |
-| **Piper ONNX** (fallback) | MIT (voices vary) | ★★ (robotic) | VITS, 50+ langs, 100+ voices. espeak-ng WASM (GPL-v3). Keep for multilingual breadth, not naturalness. |
+| **Kokoro ONNX** (default) | Apache-2.0 | ★★★★ (best small) | 82M, 24 kHz. Model supports ~10 langs (EN/JP/ZH/ES/FR/HI/IT/PT). **kokoro-js v1.2.1 only bundles EN voices** (20 US + 8 GB). ZH/JP voices need a kokoro-js update or manual voice-pack loading. GPL-free EN/ZH/JP/KO via misaki. **Use FP16 (163 MB), not Q4, for quality.** |
+| **Piper ONNX** (fallback) | MIT (voices vary) | ★★ (robotic) | VITS, 50+ langs, 100+ voices incl. `zh_CN-huayan-medium`. espeak-ng WASM (GPL-v3). Keep for multilingual breadth, not naturalness. **ZH path carries GPLv3 risk — prefer Kokoro ZH or Tier 2 for commercial use.** |
 | Kitten TTS | Apache-2.0 | ★★ | 15–25 MB, ultra-light CPU/browser. For extreme low-resource, **not** for naturalness. |
 | MeloTTS | MIT | ★★★ | VITS, CPU real-time, EN/ZH/ES/FR/JA/KO. Slightly below Kokoro; needs Python or ONNX export. |
 
@@ -30,6 +30,20 @@ Runs in `apps/web` (onnxruntime-web) or a CPU Node process. Ships today.
    (Piper: prefer `en_US-lessac-medium` over `amy-low`).
 3. Feed sentence-segmented text (`@local-tts/core` `segmentText`) with punctuation
    preserved — prosody improves with proper chunking.
+
+### Mandarin / Chinese support (2026-06-07 audit)
+
+| Path | Quality | License | Ready? |
+|------|---------|---------|--------|
+| **Kokoro ZH** (native model) | ★★★★ | Apache-2.0 (misaki[zh], GPL-free) | ❌ kokoro-js v1.2.1 doesn't bundle ZH voices (8 voices: `zf_*`). Model supports them — need JS package update. |
+| **Piper ZH** (`zh_CN-huayan-medium`) | ★★ | MIT (code), **GPLv3 (espeak-ng)** | ✅ Works today. But naturalness is robotic + GPLv3 phonemizer is a commercial dead-end. |
+| **MeloTTS ZH** | ★★★ | MIT | ⚠️ Needs Python or ONNX export. No browser adapter yet. |
+| **Tier 2 ZH** (Chatterbox / Orpheus) | ★★★★★ | MIT / Apache-2.0 | 🔮 Future. Solves both quality + license in one move. |
+
+**Action plan:**
+1. **Short-term:** Improve Piper ZH UI discoverability (voice dropdown groups by language, not English-first). zh_CN voices work today — let users find them.
+2. **Mid-term:** Track `kokoro-js` releases for ZH voice-pack support. When it lands, switch ZH default to Kokoro (GPL-free, 4★ quality).
+3. **Long-term:** Tier 2 GPU sidecar obsoletes Piper ZH entirely — Chatterbox/Orpheus give 5★ Mandarin with MIT/Apache-2.0.
 
 ## Tier 2 — GPU server-side (sidecar) for human-level voice
 PyTorch LLM-TTS models. **Cannot** load in `onnxruntime-node` — run each as a

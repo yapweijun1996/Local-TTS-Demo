@@ -60,17 +60,44 @@ export interface VoiceInfo {
   id: string;
   name: string;
   language: string;
+  /** Human-readable language name for optgroup labels (Piper). */
+  languageLabel?: string;
   grade?: string;
 }
 
 export function populateVoiceDropdown(voices: VoiceInfo[]): void {
   voiceSelect.innerHTML = "";
-  for (const v of voices) {
-    const opt = document.createElement("option");
-    opt.value = v.id;
-    opt.textContent = `${v.name} (${v.language})${v.grade ? ` · ${v.grade}` : ""}`;
-    voiceSelect.appendChild(opt);
+
+  // When voices carry languageLabel (Piper), group by language with <optgroup>.
+  // Kokoro only has one language → flat list, backward compatible.
+  const useGroups = voices.some((v) => v.languageLabel);
+  if (useGroups) {
+    const groups = new Map<string, VoiceInfo[]>();
+    for (const v of voices) {
+      const label = v.languageLabel ?? v.language;
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label)!.push(v);
+    }
+    for (const [label, items] of groups) {
+      const g = document.createElement("optgroup");
+      g.label = label;
+      for (const v of items) {
+        const opt = document.createElement("option");
+        opt.value = v.id;
+        opt.textContent = `${v.name} (${v.language})${v.grade ? ` · ${v.grade}` : ""}`;
+        g.appendChild(opt);
+      }
+      voiceSelect.appendChild(g);
+    }
+  } else {
+    for (const v of voices) {
+      const opt = document.createElement("option");
+      opt.value = v.id;
+      opt.textContent = `${v.name} (${v.language})${v.grade ? ` · ${v.grade}` : ""}`;
+      voiceSelect.appendChild(opt);
+    }
   }
+
   // Default to the most natural voice: Kokoro's af_heart (grade A), then a Piper
   // high-quality English voice, then any grade-A voice, then the first available.
   const preferred =
