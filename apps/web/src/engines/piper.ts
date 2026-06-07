@@ -7,8 +7,15 @@
  */
 
 import * as PiperLib from "@zahid0/piper-tts-web";
+import { segmentText, decodeWav, concatFloat32, encodeWav } from "@local-tts/core";
 import { showProgress, showBar } from "../ui.js";
 import type { VoiceInfo } from "../ui.js";
+
+// Same chunk size as Kokoro (main.ts). Keeps the espeak-ng → VITS phoneme tensor
+// per call bounded, so long input can't blow up memory in one synchronous run.
+const PIPER_CHUNK_SIZE = 480;
+/** Silence inserted between sentence chunks, in seconds (matches Kokoro pacing). */
+const GAP_SECONDS = 0.06;
 
 // ── Types ─────────────────────────────────────────────────────────────
 export interface PiperVoice {
@@ -84,11 +91,17 @@ export async function resetPiperCache(): Promise<void> {
 
 // ── Generate ──────────────────────────────────────────────────────────
 /**
- * Synthesize with Piper.
+ * Synthesize with Piper, returning a single WAV ArrayBuffer.
  *
  * First call downloads the voice model → OPFS (cached for subsequent calls).
  * On ONNX protobuf / "No graph" errors the model is assumed corrupted — cache
  * is cleared and the download retried once.
+ *
+ * Long text is split into sentence chunks (like Kokoro): `predict()` phonemizes
+ * and runs the whole input as ONE tensor, so feeding 3000 words at once risks a
+ * huge allocation / frozen tab. Each chunk returns a finished WAV, so we decode
+ * the PCM back out, splice in a short silence between sentences, and re-encode
+ * one WAV. Single-chunk input keeps the original fast path (no decode/re-encode).
  */
 export async function piperGenerate(
   text: string,
@@ -108,9 +121,27 @@ export async function piperGenerate(
       });
       showBar(null);
     }
-    showProgress("Synthesizing with Piper…");
-    const blob = await P.predict({ text, voiceId });
-    return blob.arrayBuffer();
+
+    const chunks = segmentText(text, PIPER_CHUNK_SIZE);
+    if (chunks.length <= 1) {
+      showProgress("Synthesizing with Piper…");
+      const blob = await P.predict({ text: chunks[0] ?? text, voiceId });
+      return blob.arrayBuffer();
+    }
+
+    const parts: Float32Array[] = [];
+    let sampleRate = 22050; // Piper default; overwritten from the decoded WAV
+    for (let i = 0; i < chunks.length; i++) {
+      showProgress(`Synthesizing with Piper… sentence ${i + 1}/${chunks.length}`);
+      const blob = await P.predict({ text: chunks[i]!, voiceId });
+      const decoded = decodeWav(await blob.arrayBuffer());
+      sampleRate = decoded.sampleRate || sampleRate;
+      parts.push(decoded.samples);
+      if (i < chunks.length - 1) {
+        parts.push(new Float32Array(Math.round(sampleRate * GAP_SECONDS)));
+      }
+    }
+    return encodeWav(concatFloat32(parts), { sampleRate });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
     // ONNX protobuf error → model corrupted → clear cache & retry once

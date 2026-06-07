@@ -128,7 +128,10 @@ async function onEngineSwitch(): Promise<void> {
 }
 
 // ── Generate ──────────────────────────────────────────────────────────
-const MAX_TEXT_LENGTH = 3000;
+// ~20k chars covers ~3000 English words (avg ~6 chars/word incl. space) with
+// headroom. Both engines chunk internally (segmentText → per-chunk synth →
+// concat), so length is bounded by patience/RAM, not a single-call truncation.
+const MAX_TEXT_LENGTH = 20000;
 const CHUNK_SIZE = 480;
 
 async function onGenerate(): Promise<void> {

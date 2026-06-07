@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   encodeWav,
+  decodeWav,
   wavDurationMs,
   concatFloat32,
   WAV_HEADER_BYTES,
@@ -55,6 +56,54 @@ describe("encodeWav", () => {
     expect(() =>
       encodeWav(new Float32Array([0]), { sampleRate: 24000, numChannels: 0 }),
     ).toThrow(RangeError);
+  });
+});
+
+describe("decodeWav", () => {
+  it("round-trips encodeWav samples (within 16-bit quantization)", () => {
+    const samples = new Float32Array([0, 0.5, -0.5, 0.25, -0.75]);
+    const decoded = decodeWav(encodeWav(samples, { sampleRate: 22050 }));
+    expect(decoded.sampleRate).toBe(22050);
+    expect(decoded.numChannels).toBe(1);
+    expect(decoded.samples.length).toBe(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      expect(decoded.samples[i]).toBeCloseTo(samples[i]!, 3);
+    }
+  });
+
+  it("decodes data even when a non-canonical chunk precedes 'data'", () => {
+    // Build RIFF: fmt + a junk 'LIST' chunk + data, to exercise the chunk walk.
+    const pcm = new Int16Array([100, -200, 32767, -32768]);
+    const junk = 6; // odd-padded to 6 → word-aligned at +6
+    const dataBytes = pcm.length * 2;
+    const total = 12 + 24 + (8 + junk) + (8 + dataBytes);
+    const buf = new ArrayBuffer(total);
+    const v = new DataView(buf);
+    const w = (o: number, s: string): void => {
+      for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+    };
+    w(0, "RIFF"); v.setUint32(4, total - 8, true); w(8, "WAVE");
+    w(12, "fmt "); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 16000, true); v.setUint32(28, 32000, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, "LIST"); v.setUint32(40, junk, true);
+    const dataChunk = 36 + 8 + junk;
+    w(dataChunk, "data"); v.setUint32(dataChunk + 4, dataBytes, true);
+    for (let i = 0; i < pcm.length; i++) v.setInt16(dataChunk + 8 + i * 2, pcm[i]!, true);
+
+    const decoded = decodeWav(buf);
+    expect(decoded.sampleRate).toBe(16000);
+    expect(decoded.samples.length).toBe(pcm.length);
+    expect(decoded.samples[2]).toBeCloseTo(1, 4); // 32767 → +1
+    expect(decoded.samples[3]).toBeCloseTo(-1, 4); // -32768 → -1
+  });
+
+  it("rejects non-RIFF and non-16-bit input", () => {
+    expect(() => decodeWav(new ArrayBuffer(8))).toThrow(RangeError);
+    const eightBit = encodeWav(new Float32Array([0]), { sampleRate: 8000 });
+    new DataView(eightBit).setUint16(34, 8, true); // corrupt bits-per-sample → 8
+    expect(() => decodeWav(eightBit)).toThrow(RangeError);
   });
 });
 

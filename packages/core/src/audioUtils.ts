@@ -76,6 +76,75 @@ export function encodeWav(samples: Float32Array, options: WavOptions): ArrayBuff
   return buffer;
 }
 
+export interface DecodedWav {
+  /** Decoded float32 PCM samples in [-1, 1]. Interleaved if numChannels > 1. */
+  samples: Float32Array;
+  sampleRate: number;
+  numChannels: number;
+}
+
+/**
+ * Decode a 16-bit PCM WAV (canonical RIFF/WAVE) back into float32 samples — the
+ * inverse of {@link encodeWav}. Scans RIFF subchunks for `fmt ` and `data`, so a
+ * non-canonical header (extra chunks before `data`) still decodes. Used to
+ * re-extract PCM from engines that only return a finished WAV per call (e.g.
+ * Piper), so multiple chunks can be concatenated into one output.
+ *
+ * Throws {@link RangeError} on a non-RIFF buffer or unsupported (non-PCM /
+ * non-16-bit) format — those would silently produce noise otherwise.
+ */
+export function decodeWav(buffer: ArrayBuffer): DecodedWav {
+  const view = new DataView(buffer);
+  const ascii = (offset: number): string =>
+    String.fromCharCode(
+      view.getUint8(offset),
+      view.getUint8(offset + 1),
+      view.getUint8(offset + 2),
+      view.getUint8(offset + 3),
+    );
+
+  if (buffer.byteLength < WAV_HEADER_BYTES || ascii(0) !== "RIFF" || ascii(8) !== "WAVE") {
+    throw new RangeError("Not a RIFF/WAVE buffer.");
+  }
+
+  let numChannels = 1;
+  let sampleRate = 0;
+  let bitsPerSample = 16;
+  let dataOffset = -1;
+  let dataSize = 0;
+
+  // Walk subchunks starting after the 12-byte RIFF/WAVE header.
+  let offset = 12;
+  while (offset + 8 <= buffer.byteLength) {
+    const id = ascii(offset);
+    const size = view.getUint32(offset + 4, true);
+    const body = offset + 8;
+    if (id === "fmt ") {
+      numChannels = view.getUint16(body + 2, true);
+      sampleRate = view.getUint32(body + 4, true);
+      bitsPerSample = view.getUint16(body + 14, true);
+    } else if (id === "data") {
+      dataOffset = body;
+      dataSize = Math.min(size, buffer.byteLength - body);
+      break;
+    }
+    offset = body + size + (size & 1); // chunks are word-aligned (pad odd sizes)
+  }
+
+  if (dataOffset < 0) throw new RangeError("WAV has no data chunk.");
+  if (bitsPerSample !== 16) {
+    throw new RangeError(`Only 16-bit PCM is supported, got ${bitsPerSample}-bit.`);
+  }
+
+  const count = Math.floor(dataSize / 2);
+  const samples = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    const s = view.getInt16(dataOffset + i * 2, true);
+    samples[i] = s < 0 ? s / 0x8000 : s / 0x7fff;
+  }
+  return { samples, sampleRate, numChannels: numChannels || 1 };
+}
+
 /** Duration in milliseconds for a sample count at a given rate. */
 export function wavDurationMs(numSamples: number, sampleRate: number): number {
   if (sampleRate <= 0) return 0;
