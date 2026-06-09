@@ -6,11 +6,10 @@
  * browser app and the future Node API share identical text-handling behavior.
  */
 
-import { validateText, segmentText, TtsError } from "@local-tts/core";
+import { validateText, TtsError } from "@local-tts/core";
 import type { KokoroDtype } from "./engines/kokoro.js";
 import {
   loadKokoro,
-  kokoroGenerate,
   kokoroVoices,
   type KokoroChunkStats,
 } from "./engines/kokoro.js";
@@ -18,7 +17,6 @@ import {
   getPiper,
   loadPiperVoices,
   resetPiperCache,
-  piperGenerate,
   PIPER_RESET_FLAG,
   type PiperChunkStats,
 } from "./engines/piper.js";
@@ -27,6 +25,7 @@ import {
   voiceSelect,
   engineSelect,
   generateBtn,
+  cancelBtn,
   audioPlayer,
   playerRow,
   downloadBtn,
@@ -101,10 +100,71 @@ function clearCurrentWav(): void {
   currentWav = null;
 }
 
+type WorkerRequestMessage =
+  | {
+      type: "generate";
+      runId: number;
+      engine: EngineId;
+      text: string;
+      voice: string;
+    };
+
+type WorkerProgressMessage = {
+  type: "progress";
+  runId: number;
+  message: string;
+  pct?: number | null;
+};
+
+type WorkerChunkMessage = {
+  type: "chunk";
+  runId: number;
+  engine: EngineId;
+  stats: ChunkStats;
+};
+
+type WorkerLogMessage = {
+  type: "log";
+  runId: number;
+  message: string;
+};
+
+type WorkerDoneMessage = {
+  type: "done";
+  runId: number;
+  wavBuffer: ArrayBuffer;
+};
+
+type WorkerErrorMessage = {
+  type: "error";
+  runId: number;
+  message: string;
+};
+
+type WorkerAbortedMessage = {
+  type: "aborted";
+  runId: number;
+};
+
+type WorkerResponseMessage =
+  | WorkerProgressMessage
+  | WorkerChunkMessage
+  | WorkerLogMessage
+  | WorkerDoneMessage
+  | WorkerErrorMessage
+  | WorkerAbortedMessage;
+
+interface WorkerGenerationJob {
+  resolve: (wav: ArrayBuffer) => void;
+  reject: (reason: unknown) => void;
+  onChunk: (stats: ChunkStats) => void;
+}
+
 // State
 let currentWav: Blob | null = null;
 let currentEngine: EngineId = "kokoro-fp16";
 let generationRunId = 0;
+let activeRunId = 0;
 
 const engines = new Map<EngineId, EngineState>([
   [
@@ -145,7 +205,134 @@ const engines = new Map<EngineId, EngineState>([
   ],
 ]);
 
-// Engine switch.
+let ttsWorker: Worker | null = null;
+const workerJobs = new Map<number, WorkerGenerationJob>();
+const CANCELLED_ERROR = "Generation cancelled.";
+
+function createProgressPoster(runId: number): (message: string, pct?: number | null) => void {
+  return (message, pct) => {
+    if (runId !== generationRunId) return;
+    showProgress(message);
+    if (pct === null) {
+      showBar(null);
+    } else if (typeof pct === "number") {
+      showBar(pct);
+    }
+  };
+}
+
+function getWorker(): Worker {
+  if (ttsWorker) return ttsWorker;
+  ttsWorker = new Worker(new URL("./ttsWorker.ts", import.meta.url), { type: "module" });
+  ttsWorker.addEventListener("message", onTtsWorkerMessage);
+  ttsWorker.addEventListener("error", onTtsWorkerError);
+  return ttsWorker;
+}
+
+function onTtsWorkerMessage(event: MessageEvent<WorkerResponseMessage>): void {
+  const msg = event.data;
+  if (!msg || typeof msg !== "object") return;
+  const job = workerJobs.get(msg.runId);
+
+  switch (msg.type) {
+    case "progress": {
+      if (msg.runId !== generationRunId) return;
+      showProgress(msg.message);
+      if (msg.pct === null) {
+        showBar(null);
+      } else if (typeof msg.pct === "number") {
+        showBar(msg.pct);
+      }
+      break;
+    }
+    case "log":
+      appendDebugLog(`[worker] ${msg.message}`);
+      break;
+    case "chunk": {
+      if (msg.runId !== generationRunId) return;
+      if (job) {
+        job.onChunk(msg.stats);
+      }
+      break;
+    }
+    case "done": {
+      workerJobs.delete(msg.runId);
+      if (!job || msg.runId !== generationRunId) return;
+      job.resolve(msg.wavBuffer);
+      break;
+    }
+    case "error": {
+      workerJobs.delete(msg.runId);
+      if (!job || msg.runId !== generationRunId) return;
+      job.reject(new Error(msg.message || "Generation failed in worker"));
+      break;
+    }
+    case "aborted": {
+      workerJobs.delete(msg.runId);
+      if (!job || msg.runId !== generationRunId) return;
+      job.reject(new Error(CANCELLED_ERROR));
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function onTtsWorkerError(event: ErrorEvent): void {
+  appendDebugLog(`[worker] runtime error: ${event.message}`);
+  for (const [runId, job] of workerJobs) {
+    job.reject(new Error(event.message || "Worker runtime error"));
+    workerJobs.delete(runId);
+  }
+}
+
+function setGeneratingState(active: boolean): void {
+  cancelBtn.disabled = !active;
+  cancelBtn.style.display = active ? "inline-block" : "none";
+}
+
+function startWorkerGenerate(
+  runId: number,
+  engine: EngineId,
+  text: string,
+  voice: string,
+  onChunk: (stats: ChunkStats) => void,
+): Promise<ArrayBuffer> {
+  const worker = getWorker();
+  return new Promise((resolve, reject) => {
+    workerJobs.set(runId, { resolve, reject, onChunk });
+    try {
+      worker.postMessage({
+        type: "generate",
+        runId,
+        engine,
+        text,
+        voice,
+      } satisfies WorkerRequestMessage);
+    } catch (e) {
+      workerJobs.delete(runId);
+      reject(e);
+    }
+  });
+}
+
+function cancelWorkerRun(runId: number): void {
+  if (runId <= 0) return;
+  const job = workerJobs.get(runId);
+  if (job) {
+    workerJobs.delete(runId);
+    job.reject(new Error(CANCELLED_ERROR));
+  }
+  if (ttsWorker) {
+    ttsWorker.postMessage({ type: "cancel", runId });
+  }
+}
+
+function onCancelGenerate(): void {
+  if (!activeRunId) return;
+  cancelWorkerRun(activeRunId);
+}
+
 async function onEngineSwitch(): Promise<void> {
   const id = engineSelect.value as EngineId;
   currentEngine = id;
@@ -157,7 +344,7 @@ async function onEngineSwitch(): Promise<void> {
   try {
     if (id.startsWith("kokoro-")) {
       const dtype = id.replace("kokoro-", "") as KokoroDtype;
-      const tts = await loadKokoro(dtype);
+      const tts = await loadKokoro(dtype, createProgressPoster(generationRunId));
       if (!state.ready) {
         state.voices = kokoroVoices(tts);
         state.ready = true;
@@ -165,7 +352,7 @@ async function onEngineSwitch(): Promise<void> {
       populateVoiceDropdown(state.voices);
     } else if (id === "piper") {
       if (!state.ready) {
-        state.voices = await loadPiperVoices();
+        state.voices = await loadPiperVoices(createProgressPoster(generationRunId));
         state.ready = true;
       }
       populateVoiceDropdown(state.voices);
@@ -177,6 +364,7 @@ async function onEngineSwitch(): Promise<void> {
     appendDebugLog(`[engine-switch] failed ${id} => ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     setBusy(false);
+    showBar(null);
   }
 }
 
@@ -188,9 +376,16 @@ const MAX_TEXT_LENGTH = 20000;
 const CHUNK_SIZE = 480;
 
 async function onGenerate(): Promise<void> {
+  const prevRunId = generationRunId;
+  if (prevRunId > 0) {
+    cancelWorkerRun(prevRunId);
+  }
+
   clearError();
   const runId = ++generationRunId;
+  activeRunId = runId;
   setBusy(true);
+  setGeneratingState(true);
   setDebugStatus("");
   clearDebugLog();
   clearCurrentWav();
@@ -223,40 +418,9 @@ async function onGenerate(): Promise<void> {
     appendDebugLog(`[${id}] generate start len=${text.length}`);
     totalChunkEstimate = Math.max(1, Math.ceil(text.length / CHUNK_SIZE));
 
-    let wavBuffer: ArrayBuffer;
-    if (id.startsWith("kokoro-")) {
-      const dtype = id.replace("kokoro-", "") as KokoroDtype;
-      const tts = await loadKokoro(dtype);
-      const voice = voiceSelect.value || undefined;
-      const chunks = text.length > CHUNK_SIZE ? segmentText(text, CHUNK_SIZE) : [text];
-      appendDebugLog(`prepared ${chunks.length} chunk(s).`);
-      chunks.forEach((chunk, i) => {
-        appendDebugLog(
-          `input chunk ${i + 1}/${chunks.length} len=${chunk.length} text="${summarizeText(chunk)}"`,
-        );
-      });
-      totalChunkEstimate = chunks.length;
-      appendDebugLog(`engine selected=${id}`);
-      wavBuffer = await kokoroGenerate(
-        tts,
-        voice as Parameters<typeof kokoroGenerate>[1],
-        chunks,
-        (stats) => {
-          onChunk(stats);
-        },
-      );
-    } else {
-      appendDebugLog("Preparing Piper chunks (chunk size is 480 inside engine).");
-      wavBuffer = await piperGenerate(
-        text,
-        voiceSelect.value,
-        false,
-        (stats) => {
-          onChunk(stats);
-        },
-      );
-    }
+    const wavBuffer = await startWorkerGenerate(runId, id, text, voiceSelect.value || "", onChunk);
 
+    if (runId !== generationRunId) return;
     appendDebugLog(`generate done. wavBytes=${wavBuffer.byteLength}`);
 
     const outputBlob = new Blob([wavBuffer], { type: "audio/wav" });
@@ -271,6 +435,11 @@ async function onGenerate(): Promise<void> {
     showProgress(`Done (${Math.round((performance.now() - generationStart) / 1000)}s).`);
   } catch (e) {
     if (runId !== generationRunId) return;
+    if (e instanceof Error && e.message === CANCELLED_ERROR) {
+      setDebugStatus("Generation cancelled.");
+      showProgress("Generation cancelled.");
+      return;
+    }
     setDebugStatus("Generation failed. See log.");
     if (e instanceof TtsError) {
       showError(e.message);
@@ -284,6 +453,10 @@ async function onGenerate(): Promise<void> {
   } finally {
     if (runId !== generationRunId) return;
     setBusy(false);
+    setGeneratingState(false);
+    if (activeRunId === runId) {
+      activeRunId = 0;
+    }
     showBar(null);
   }
 }
@@ -308,6 +481,14 @@ async function onCopyDebugLog(): Promise<void> {
     const msg = e instanceof Error ? e.message : "Unknown error";
     showError(`Failed to copy debug log: ${msg}`);
     setDebugStatus("Copy failed.");
+  }
+}
+
+async function onResetPiperCache(): Promise<void> {
+  try {
+    await resetPiperCache(createProgressPoster(generationRunId));
+  } catch {
+    // keep no-op: reset errors are already surfaced by resetPiperCache.
   }
 }
 
@@ -336,9 +517,9 @@ async function init(): Promise<void> {
   }
 
   engineSelect.innerHTML = "";
-  for (const [id, state] of engines) {
+  for (const [, state] of engines) {
     const opt = document.createElement("option");
-    opt.value = id;
+    opt.value = state.id;
     opt.textContent = state.label;
     engineSelect.appendChild(opt);
   }
@@ -355,8 +536,9 @@ async function init(): Promise<void> {
 
 engineSelect.addEventListener("change", onEngineSwitch);
 generateBtn.addEventListener("click", onGenerate);
+cancelBtn.addEventListener("click", onCancelGenerate);
 downloadBtn.addEventListener("click", onDownload);
-resetPiperBtn.addEventListener("click", resetPiperCache);
+resetPiperBtn.addEventListener("click", onResetPiperCache);
 copyDebugLogBtn.addEventListener("click", onCopyDebugLog);
 clearDebugLogBtn.addEventListener("click", () => {
   clearDebugLog();

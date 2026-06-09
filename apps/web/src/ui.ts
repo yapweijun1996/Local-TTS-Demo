@@ -10,6 +10,7 @@ export const textInput = document.getElementById("text-input") as HTMLTextAreaEl
 export const voiceSelect = document.getElementById("voice-select") as HTMLSelectElement;
 export const engineSelect = document.getElementById("engine-select") as HTMLSelectElement;
 export const generateBtn = document.getElementById("generate-btn") as HTMLButtonElement;
+export const cancelBtn = document.getElementById("cancel-btn") as HTMLButtonElement;
 export const progressEl = document.getElementById("progress") as HTMLDivElement;
 export const progressBar = document.getElementById("dl-progress") as HTMLProgressElement;
 export const errorEl = document.getElementById("error") as HTMLDivElement;

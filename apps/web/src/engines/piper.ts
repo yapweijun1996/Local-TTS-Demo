@@ -8,7 +8,6 @@
 
 import * as PiperLib from "@zahid0/piper-tts-web";
 import { segmentText, decodeWav, concatFloat32, encodeWav } from "@local-tts/core";
-import { showProgress, showBar } from "../ui.js";
 import type { VoiceInfo } from "../ui.js";
 
 // Same chunk size as Kokoro (main.ts). Keeps the espeak-ng -> VITS phoneme tensor
@@ -16,6 +15,8 @@ import type { VoiceInfo } from "../ui.js";
 const PIPER_CHUNK_SIZE = 480;
 /** Silence inserted between sentence chunks, in seconds (matches Kokoro pacing). */
 const GAP_SECONDS = 0.06;
+export type ProgressReporter = (message: string, pct?: number | null) => void;
+const noopProgress: ProgressReporter = () => {};
 
 // -- Types ------------------------------------------------------------------
 export interface PiperVoice {
@@ -61,8 +62,8 @@ export function getPiper() {
 }
 
 // -- Voices -----------------------------------------------------------------
-export async function loadPiperVoices(): Promise<VoiceInfo[]> {
-  showProgress("Loading Piper voice list...");
+export async function loadPiperVoices(onProgress: ProgressReporter = noopProgress): Promise<VoiceInfo[]> {
+  onProgress("Loading Piper voice list...");
   const all = await getPiper().voices();
 
   // Quality rank for in-language sorting: high -> medium -> low.
@@ -117,11 +118,11 @@ export async function loadPiperVoices(): Promise<VoiceInfo[]> {
  */
 export const PIPER_RESET_FLAG = "piper-reset-pending";
 
-export async function resetPiperCache(): Promise<void> {
-  showProgress("Clearing Piper model cache...");
+export async function resetPiperCache(onProgress: ProgressReporter = noopProgress): Promise<void> {
+  onProgress("Clearing Piper model cache...");
   try {
     await getPiper().flush();
-    showProgress("Piper cache cleared. Select a voice and generate to re-download.");
+    onProgress("Piper cache cleared. Select a voice and generate to re-download.");
   } catch (e) {
     // OPFS refuses to delete while Piper worker holds an open SyncAccessHandle
     // (NoModificationAllowedError / InvalidStateError). Reload drops every handle;
@@ -129,11 +130,11 @@ export async function resetPiperCache(): Promise<void> {
     const name = e instanceof Error ? e.name : "";
     if (name === "NoModificationAllowedError" || name === "InvalidStateError") {
       sessionStorage.setItem(PIPER_RESET_FLAG, "1");
-      showProgress("Releasing model locks - reloading to finish clearing cache...");
+      onProgress("Releasing model locks - reloading to finish clearing cache...");
       return;
     }
     // Cache was empty or the API is unavailable -- treat as already cleared.
-    showProgress("Piper cache cleared (was already empty).");
+    onProgress("Piper cache cleared (was already empty).");
   }
 }
 
@@ -156,24 +157,24 @@ export async function piperGenerate(
   voiceId: string,
   isRetry = false,
   onChunk?: ChunkLogger,
+  onProgress: ProgressReporter = noopProgress,
 ): Promise<ArrayBuffer> {
   const P = getPiper();
   try {
     if (!isRetry) {
-      showProgress("Downloading Piper voice model (first time only)...");
+      onProgress("Downloading Piper voice model (first time only)...");
       await P.download(voiceId, (p) => {
         if (p.total > 0) {
           const pct = Math.round((p.loaded / p.total) * 100);
-          showProgress(`Downloading voice... ${pct}%`);
-          showBar(pct);
+          onProgress(`Downloading voice... ${pct}%`, pct);
         }
       });
-      showBar(null);
+      onProgress("Downloading Piper voice model (first time only)...", null);
     }
 
     const chunks = segmentText(text, PIPER_CHUNK_SIZE);
     if (chunks.length <= 1) {
-      showProgress("Synthesizing with Piper...");
+      onProgress("Synthesizing with Piper...");
       const blob = await P.predict({ text: chunks[0] ?? text, voiceId });
       const arrayBuffer = await blob.arrayBuffer();
       if (onChunk) {
@@ -193,7 +194,7 @@ export async function piperGenerate(
     const parts: Float32Array[] = [];
     let sampleRate = 22050; // Piper default; overwritten from the decoded WAV
     for (let i = 0; i < chunks.length; i++) {
-      showProgress(`Synthesizing with Piper... sentence ${i + 1}/${chunks.length}`);
+      onProgress(`Synthesizing with Piper... sentence ${i + 1}/${chunks.length}`);
       const blob = await P.predict({ text: chunks[i]!, voiceId });
       const decoded = decodeWav(await blob.arrayBuffer());
       sampleRate = decoded.sampleRate || sampleRate;
@@ -217,8 +218,8 @@ export async function piperGenerate(
     const msg = e instanceof Error ? e.message : "";
     // ONNX protobuf error -> model corrupted -> clear cache & retry once
     if (!isRetry && (msg.includes("protobuf") || msg.includes("No graph"))) {
-      showProgress("Piper model corrupted. Clearing cache & re-downloading...");
-      return piperGenerate(text, voiceId, true, onChunk);
+      onProgress("Piper model corrupted. Clearing cache & re-downloading...");
+      return piperGenerate(text, voiceId, true, onChunk, onProgress);
     }
     throw e;
   }
