@@ -7,6 +7,15 @@
  */
 
 import { validateText, TtsError } from "@local-tts/core";
+import {
+  saveHistoryEntry,
+  listHistory,
+  deleteHistoryEntry,
+  clearHistory,
+  relativeTime,
+  formatBytes,
+  type HistoryEntry,
+} from "./ttsHistory.js";
 import type { KokoroDtype } from "./engines/kokoro.js";
 import {
   loadKokoro,
@@ -433,6 +442,16 @@ async function onGenerate(): Promise<void> {
     showBar(100);
     setDebugStatus("Done. Download ready.");
     showProgress(`Done (${Math.round((performance.now() - generationStart) / 1000)}s).`);
+
+    // Persist to IndexedDB history (fire-and-forget).
+    saveHistoryEntry({
+      text: text.slice(0, 200),
+      engine: id,
+      voice: voiceSelect.value || "",
+      wavBlob: outputBlob,
+      byteLength: wavBuffer.byteLength,
+      createdAt: Date.now(),
+    }).then(() => refreshHistoryPanel()).catch(() => {});
   } catch (e) {
     if (runId !== generationRunId) return;
     if (e instanceof Error && e.message === CANCELLED_ERROR) {
@@ -462,16 +481,112 @@ async function onGenerate(): Promise<void> {
 }
 
 // Download
-function onDownload(): void {
-  if (!currentWav) return;
-  const url = URL.createObjectURL(currentWav);
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "tts-output.wav";
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+function onDownload(): void {
+  if (!currentWav) return;
+  triggerDownload(currentWav, "tts-output.wav");
+}
+
+// -- History panel ----------------------------------------------------------
+const historyList = document.getElementById("history-list") as HTMLElement;
+const historyClearBtn = document.getElementById("history-clear-btn") as HTMLButtonElement;
+const historyEmpty = document.getElementById("history-empty") as HTMLElement;
+
+/** Active object URLs for history playback -- revoked on delete / clear. */
+const historyUrls = new Map<number, string>();
+
+/** Escape unsafe HTML characters so user text is safe to embed via innerHTML. */
+function escHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderHistoryEntry(entry: HistoryEntry): HTMLElement {
+  const id = entry.id!;
+  const item = document.createElement("div");
+  item.className = "history-item";
+  item.dataset.id = String(id);
+
+  const snippet = entry.text.slice(0, 80).replace(/\s+/g, " ").trim();
+  const label = snippet.length < entry.text.length ? `${escHtml(snippet)}…` : escHtml(snippet);
+
+  item.innerHTML = `
+    <div class="history-meta">
+      <span class="history-time">${escHtml(relativeTime(entry.createdAt))}</span>
+      <span class="history-engine">${escHtml(entry.engine)}</span>
+      <span class="history-size">${escHtml(formatBytes(entry.byteLength))}</span>
+    </div>
+    <div class="history-text" title="${escHtml(entry.text)}">${label}</div>
+    <div class="history-actions">
+      <button class="history-play-btn" aria-label="Play">&#9654; Play</button>
+      <button class="history-dl-btn" aria-label="Download">&#8595; Save</button>
+      <button class="history-del-btn" aria-label="Delete">&#10005;</button>
+    </div>`;
+
+  item.querySelector(".history-play-btn")!.addEventListener("click", () => {
+    let url = historyUrls.get(id);
+    if (!url) {
+      url = URL.createObjectURL(entry.wavBlob);
+      historyUrls.set(id, url);
+    }
+    if (audioPlayer.src) URL.revokeObjectURL(audioPlayer.src);
+    audioPlayer.src = url;
+    playerRow.style.display = "block";
+    audioPlayer.play().catch(() => {});
+  });
+
+  item.querySelector(".history-dl-btn")!.addEventListener("click", () => {
+    const ts = new Date(entry.createdAt).toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    triggerDownload(entry.wavBlob, `tts-${ts}.wav`);
+  });
+
+  item.querySelector(".history-del-btn")!.addEventListener("click", async () => {
+    const url = historyUrls.get(id);
+    if (url) { URL.revokeObjectURL(url); historyUrls.delete(id); }
+    await deleteHistoryEntry(id);
+    item.remove();
+    const remaining = historyList.querySelectorAll(".history-item").length;
+    if (remaining === 0) historyEmpty.style.display = "block";
+  });
+
+  return item;
+}
+
+async function refreshHistoryPanel(): Promise<void> {
+  const entries = await listHistory();
+  historyList.innerHTML = "";
+  historyUrls.forEach((url) => URL.revokeObjectURL(url));
+  historyUrls.clear();
+  if (entries.length === 0) {
+    historyEmpty.style.display = "block";
+    return;
+  }
+  historyEmpty.style.display = "none";
+  for (const entry of entries) {
+    historyList.appendChild(renderHistoryEntry(entry));
+  }
+}
+
+async function onHistoryClear(): Promise<void> {
+  historyUrls.forEach((url) => URL.revokeObjectURL(url));
+  historyUrls.clear();
+  await clearHistory();
+  historyList.innerHTML = "";
+  historyEmpty.style.display = "block";
 }
 
 async function onCopyDebugLog(): Promise<void> {
@@ -532,6 +647,9 @@ async function init(): Promise<void> {
     showError(`Startup failed: ${e instanceof Error ? e.message : "Unknown error"}`);
     generateBtn.disabled = true;
   }
+
+  // Load persisted history into the panel (non-blocking).
+  void refreshHistoryPanel();
 }
 
 engineSelect.addEventListener("change", onEngineSwitch);
@@ -544,5 +662,6 @@ clearDebugLogBtn.addEventListener("click", () => {
   clearDebugLog();
   setDebugStatus("Debug log cleared.");
 });
+historyClearBtn.addEventListener("click", onHistoryClear);
 
 init();

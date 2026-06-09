@@ -147,6 +147,100 @@
       border: 1px solid #222;
     }
 
+    /* -- History panel -- */
+    #history-panel {
+      border: 1px solid #d9d9d9;
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .history-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid #e8e8e8;
+      gap: 12px;
+    }
+    .history-header h2 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 0;
+      color: #1a1a1a;
+    }
+    #history-clear-btn {
+      background: #555;
+      font-size: 0.82rem;
+      padding: 5px 12px;
+      min-width: auto;
+      border-radius: 5px;
+    }
+    #history-clear-btn:hover:not(:disabled) { background: #333; }
+    #history-list {
+      display: flex;
+      flex-direction: column;
+    }
+    .history-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-meta {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .history-time {
+      font-size: 0.8rem;
+      color: #888;
+    }
+    .history-engine {
+      font-size: 0.8rem;
+      background: #f0f0f0;
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #444;
+      font-weight: 500;
+    }
+    .history-size {
+      font-size: 0.8rem;
+      color: #aaa;
+      margin-left: auto;
+    }
+    .history-text {
+      font-size: 0.88rem;
+      color: #333;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .history-actions button {
+      font-size: 0.8rem;
+      padding: 5px 11px;
+      min-width: auto;
+      border-radius: 5px;
+    }
+    .history-play-btn { background: #1a7f3c; }
+    .history-play-btn:hover:not(:disabled) { background: #155f2d; }
+    .history-dl-btn { background: #0060b8; }
+    .history-dl-btn:hover:not(:disabled) { background: #004a8f; }
+    .history-del-btn { background: #a00; }
+    .history-del-btn:hover:not(:disabled) { background: #800; }
+    #history-empty {
+      padding: 20px 16px;
+      text-align: center;
+      color: #aaa;
+      font-size: 0.88rem;
+    }
+
     @media (max-width: 480px) {
       header { padding: 12px 16px; font-size: 1rem; }
       main { padding: 16px 12px; gap: 14px; }
@@ -208,6 +302,15 @@
     <div id="download-row" class="download-row">
       <button id="download-btn" aria-label="Download generated audio as WAV">⬇ Download WAV</button>
     </div>
+
+    <section id="history-panel" aria-label="Generation history">
+      <div class="history-header">
+        <h2>🕑 History</h2>
+        <button id="history-clear-btn" aria-label="Clear all history">Clear All</button>
+      </div>
+      <div id="history-list" role="list" aria-label="Past generations"></div>
+      <p id="history-empty" style="display:none;">No generations yet. Your WAV files will appear here.</p>
+    </section>
 
     <details id="debug-panel" class="debug-panel">
       <summary>Debug log</summary>
