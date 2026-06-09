@@ -173,7 +173,7 @@ interface WorkerGenerationJob {
 
 // State
 let currentWav: Blob | null = null;
-let currentEngine: EngineId = "kokoro-fp16";
+let currentEngine: EngineId = "kokoro-q4";
 let generationRunId = 0;
 let activeRunId = 0;
 
@@ -648,7 +648,7 @@ async function init(): Promise<void> {
     opt.textContent = state.label;
     engineSelect.appendChild(opt);
   }
-  engineSelect.value = "kokoro-fp16";
+  engineSelect.value = "kokoro-q4";
   resetPiperBtn.style.display = "none";
 
   try {
