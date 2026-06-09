@@ -1,9 +1,9 @@
 ﻿/**
- * Piper ONNX engine â€” browser adapter via @zahid0/piper-tts-web.
+ * Piper ONNX engine Ã¢â‚¬â€ browser adapter via @zahid0/piper-tts-web.
  *
  * Piper: VITS-based, 22.05 kHz, 50+ languages, MIT (code).
- *   ~50â€“75 MB per voice (HuggingFace â†’ OPFS cache).
- *   Phonemizer: espeak-ng WASM (GPLv3 â€” see docs/LICENSING.md).
+ *   ~50Ã¢â‚¬â€œ75 MB per voice (HuggingFace Ã¢â€ â€™ OPFS cache).
+ *   Phonemizer: espeak-ng WASM (GPLv3 Ã¢â‚¬â€ see docs/LICENSING.md).
  */
 
 import * as PiperLib from "@zahid0/piper-tts-web";
@@ -11,13 +11,13 @@ import { segmentText, decodeWav, concatFloat32, encodeWav } from "@local-tts/cor
 import { showProgress, showBar } from "../ui.js";
 import type { VoiceInfo } from "../ui.js";
 
-// Same chunk size as Kokoro (main.ts). Keeps the espeak-ng â†’ VITS phoneme tensor
+// Same chunk size as Kokoro (main.ts). Keeps the espeak-ng Ã¢â€ â€™ VITS phoneme tensor
 // per call bounded, so long input can't blow up memory in one synchronous run.
 const PIPER_CHUNK_SIZE = 480;
 /** Silence inserted between sentence chunks, in seconds (matches Kokoro pacing). */
 const GAP_SECONDS = 0.06;
 
-// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ Types Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 export interface PiperVoice {
   key: string;
   name: string;
@@ -45,7 +45,7 @@ function maxAmplitude(samples: Float32Array): number {
   return max;
 }
 
-// â”€â”€ Thin typed wrapper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ Thin typed wrapper Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 /** Typed wrapper around the untyped @zahid0/piper-tts-web default export. */
 export function getPiper() {
   return PiperLib as unknown as {
@@ -60,12 +60,12 @@ export function getPiper() {
   };
 }
 
-// â”€â”€ Voices â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ Voices Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 export async function loadPiperVoices(): Promise<VoiceInfo[]> {
-  showProgress("Loading Piper voice listâ€¦");
+  showProgress("Loading Piper voice list...");
   const all = await getPiper().voices();
 
-  // Quality rank for in-language sorting: high â†’ medium â†’ low.
+  // Quality rank for in-language sorting: high Ã¢â€ â€™ medium Ã¢â€ â€™ low.
   const qualityRank = (q: string): number => {
     if (q === "high") return 0;
     if (q === "medium") return 1;
@@ -94,7 +94,7 @@ export async function loadPiperVoices(): Promise<VoiceInfo[]> {
     return a.localeCompare(b);
   });
 
-  // Flatten â€” each item carries its languageLabel for optgroup rendering.
+  // Flatten Ã¢â‚¬â€ each item carries its languageLabel for optgroup rendering.
   const sorted: VoiceInfo[] = [];
   for (const lang of langOrder) {
     const g = groups.get(lang)!;
@@ -110,7 +110,7 @@ export async function loadPiperVoices(): Promise<VoiceInfo[]> {
   return sorted;
 }
 
-// â”€â”€ Cache reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ Cache reset Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 /**
  * sessionStorage flag: a cache clear was blocked by OPFS locks; finish it
  * after the page reloads (clean load, no open SyncAccessHandle).
@@ -118,7 +118,7 @@ export async function loadPiperVoices(): Promise<VoiceInfo[]> {
 export const PIPER_RESET_FLAG = "piper-reset-pending";
 
 export async function resetPiperCache(): Promise<void> {
-  showProgress("Clearing Piper model cacheâ€¦");
+  showProgress("Clearing Piper model cache...");
   try {
     await getPiper().flush();
     showProgress("Piper cache cleared. Select a voice and generate to re-download.");
@@ -129,21 +129,21 @@ export async function resetPiperCache(): Promise<void> {
     const name = e instanceof Error ? e.name : "";
     if (name === "NoModificationAllowedError" || name === "InvalidStateError") {
       sessionStorage.setItem(PIPER_RESET_FLAG, "1");
-      showProgress("Releasing model locks â€” reloading to finish clearing cacheâ€¦");
-      location.reload();
+      showProgress("Releasing model locks - reloading to finish clearing cache...");
+      showProgress("Releasing model locks - reloading to finish clearing cache...");
       return;
     }
-    // Cache was empty or the API is unavailable â€” treat as already cleared.
+    // Cache was empty or the API is unavailable Ã¢â‚¬â€ treat as already cleared.
     showProgress("Piper cache cleared (was already empty).");
   }
 }
 
-// â”€â”€ Generate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ Generate Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 /**
  * Synthesize with Piper, returning a single WAV ArrayBuffer.
  *
- * First call downloads the voice model â†’ OPFS (cached for subsequent calls).
- * On ONNX protobuf / "No graph" errors the model is assumed corrupted â€” cache
+ * First call downloads the voice model Ã¢â€ â€™ OPFS (cached for subsequent calls).
+ * On ONNX protobuf / "No graph" errors the model is assumed corrupted Ã¢â‚¬â€ cache
  * is cleared and the download retried once.
  *
  * Long text is split into sentence chunks (like Kokoro): `predict()` phonemizes
@@ -161,11 +161,11 @@ export async function piperGenerate(
   const P = getPiper();
   try {
     if (!isRetry) {
-      showProgress("Downloading Piper voice model (first time only)â€¦");
+      showProgress("Downloading Piper voice model (first time only)...");
       await P.download(voiceId, (p) => {
         if (p.total > 0) {
           const pct = Math.round((p.loaded / p.total) * 100);
-          showProgress(`Downloading voiceâ€¦ ${pct}%`);
+           showProgress(`Downloading voice... ${pct}%`);
           showBar(pct);
         }
       });
@@ -174,8 +174,8 @@ export async function piperGenerate(
 
     const chunks = segmentText(text, PIPER_CHUNK_SIZE);
     if (chunks.length <= 1) {
-      showProgress("Synthesizing with Piperâ€¦");
-      const blob = await P.predict({ text: chunks[0] ?? text, voiceId });
+      showProgress("Synthesizing with PiperÃ¢â‚¬Â¦");
+      showProgress("Synthesizing with Piper...");
       const arrayBuffer = await blob.arrayBuffer();
       if (onChunk) {
         const decoded = decodeWav(arrayBuffer);
@@ -194,8 +194,8 @@ export async function piperGenerate(
     const parts: Float32Array[] = [];
     let sampleRate = 22050; // Piper default; overwritten from the decoded WAV
     for (let i = 0; i < chunks.length; i++) {
-      showProgress(`Synthesizing with Piperâ€¦ sentence ${i + 1}/${chunks.length}`);
-      const blob = await P.predict({ text: chunks[i]!, voiceId });
+      showProgress(`Synthesizing with PiperÃ¢â‚¬Â¦ sentence ${i + 1}/${chunks.length}`);
+      showProgress(`Synthesizing with Piper... sentence ${i + 1}/${chunks.length}`);
       const decoded = decodeWav(await blob.arrayBuffer());
       sampleRate = decoded.sampleRate || sampleRate;
       if (onChunk) {
@@ -216,10 +216,10 @@ export async function piperGenerate(
     return encodeWav(concatFloat32(parts), { sampleRate });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "";
-    // ONNX protobuf error â†’ model corrupted â†’ clear cache & retry once
+    // ONNX protobuf error Ã¢â€ â€™ model corrupted Ã¢â€ â€™ clear cache & retry once
     if (!isRetry && (msg.includes("protobuf") || msg.includes("No graph"))) {
-      showProgress("Piper model corrupted. Clearing cache & re-downloadingâ€¦");
-      await P.remove(voiceId).catch(() => {});
+      showProgress("Piper model corrupted. Clearing cache & re-downloading...");
+      showProgress("Piper model corrupted. Clearing cache & re-downloading...");
       return piperGenerate(text, voiceId, true, onChunk);
     }
     throw e;
