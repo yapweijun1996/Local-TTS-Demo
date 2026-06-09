@@ -18,6 +18,11 @@ export const audioPlayer = document.getElementById("audio-player") as HTMLAudioE
 export const downloadRow = document.getElementById("download-row") as HTMLDivElement;
 export const downloadBtn = document.getElementById("download-btn") as HTMLButtonElement;
 export const resetPiperBtn = document.getElementById("reset-piper-btn") as HTMLButtonElement;
+export const debugPanel = document.getElementById("debug-panel") as HTMLDetailsElement;
+export const debugLogEl = document.getElementById("debug-log") as HTMLPreElement;
+export const debugStatusEl = document.getElementById("debug-status") as HTMLSpanElement;
+export const copyDebugLogBtn = document.getElementById("copy-debug-log-btn") as HTMLButtonElement;
+export const clearDebugLogBtn = document.getElementById("clear-debug-log-btn") as HTMLButtonElement;
 
 // ── Text progress ─────────────────────────────────────────────────────
 export function showProgress(msg: string): void {
@@ -44,6 +49,44 @@ export function showError(msg: string): void {
 export function clearError(): void {
   errorEl.textContent = "";
   errorEl.classList.remove("visible");
+}
+
+const MAX_DEBUG_LINES = 300;
+const debugLines: string[] = [];
+
+function renderDebugLines(): void {
+  debugLogEl.textContent = debugLines.join("\n");
+}
+
+export function appendDebugLog(line: string): void {
+  debugLines.push(`${new Date().toISOString()} ${line}`);
+  if (debugLines.length > MAX_DEBUG_LINES) {
+    debugLines.splice(0, debugLines.length - MAX_DEBUG_LINES);
+  }
+  renderDebugLines();
+  if (debugPanel && !debugPanel.open) {
+    debugPanel.open = true;
+  }
+}
+
+export function clearDebugLog(): void {
+  debugLines.length = 0;
+  renderDebugLines();
+  if (debugStatusEl) debugStatusEl.textContent = "";
+}
+
+export function setDebugStatus(message: string): void {
+  if (debugStatusEl) debugStatusEl.textContent = message;
+}
+
+export async function copyDebugLog(): Promise<void> {
+  const text = debugLines.join("\n");
+  if (!text) return;
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("Clipboard API is not available in this browser.");
+  }
+  await navigator.clipboard.writeText(text);
+  setDebugStatus("Copied.");
 }
 
 // ── Busy state ────────────────────────────────────────────────────────

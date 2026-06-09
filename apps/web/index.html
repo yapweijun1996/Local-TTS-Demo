@@ -12,68 +12,156 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5; color: #1a1a1a;
-      min-height: 100dvh; display: flex; flex-direction: column;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
     }
     header {
-      background: #1a1a1a; color: #fff;
-      padding: 16px 24px; font-size: 1.1rem; font-weight: 600;
+      background: #1a1a1a;
+      color: #fff;
+      padding: 16px 24px;
+      font-size: 1.1rem;
+      font-weight: 600;
     }
     main {
-      flex: 1; max-width: 680px; width: 100%; margin: 0 auto;
-      padding: 24px 16px; display: flex; flex-direction: column; gap: 20px;
+      flex: 1;
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
     }
     textarea {
-      width: 100%; min-height: 120px; padding: 12px; font-size: 1rem;
-      border: 1px solid #ccc; border-radius: 6px; resize: vertical;
+      width: 100%;
+      min-height: 120px;
+      padding: 12px;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      resize: vertical;
       font-family: inherit;
     }
     textarea:focus-visible {
-      outline: 2px solid #1a1a1a; outline-offset: 2px; border-color: #1a1a1a;
+      outline: 2px solid #1a1a1a;
+      outline-offset: 2px;
+      border-color: #1a1a1a;
     }
     .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
     select, button {
-      padding: 10px 16px; font-size: 0.95rem; border-radius: 6px;
-      border: 1px solid #ccc; font-family: inherit;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      font-family: inherit;
     }
     select:focus-visible, button:focus-visible {
-      outline: 2px solid #1a1a1a; outline-offset: 2px;
+      outline: 2px solid #1a1a1a;
+      outline-offset: 2px;
     }
     button {
-      background: #1a1a1a; color: #fff; border: none; cursor: pointer;
-      font-weight: 600; min-width: 140px;
+      background: #1a1a1a;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      min-width: 140px;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     button:hover:not(:disabled) { background: #333; }
     progress {
-      width: 100%; height: 8px; display: none;
+      width: 100%;
+      height: 8px;
+      display: none;
     }
     .progress {
-      font-size: 0.9rem; color: #666; min-height: 1.2em;
+      font-size: 0.9rem;
+      color: #666;
+      min-height: 1.2em;
     }
     .error {
-      color: #d00; background: #fdd; padding: 12px; border-radius: 6px;
-      font-size: 0.9rem; display: none;
+      color: #d00;
+      background: #fdd;
+      padding: 12px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      display: none;
     }
     .error.visible { display: block; }
     audio { width: 100%; margin-top: 4px; }
     .download-row { display: none; }
     .download-row.visible { display: flex; gap: 12px; align-items: center; }
     label { font-weight: 600; font-size: 0.9rem; }
+    .debug-panel {
+      border: 1px solid #d9d9d9;
+      border-radius: 8px;
+      padding: 10px 12px 12px;
+      background: #fff;
+    }
+    .debug-panel summary {
+      font-weight: 600;
+      cursor: pointer;
+      margin-bottom: 8px;
+    }
+    .debug-status-wrap {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .debug-status {
+      color: #555;
+      font-size: 0.88rem;
+      min-height: 1.2em;
+      flex: 1;
+      word-break: break-all;
+    }
+    .debug-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .debug-actions button {
+      min-width: auto;
+      font-size: 0.84rem;
+      padding: 6px 12px;
+    }
+    .debug-log {
+      max-height: 230px;
+      overflow: auto;
+      padding: 10px;
+      margin: 0;
+      background: #111;
+      color: #e8e8e8;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.82rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-all;
+      border: 1px solid #222;
+    }
 
-    /* Mobile — stack controls vertically, full-width buttons */
     @media (max-width: 480px) {
       header { padding: 12px 16px; font-size: 1rem; }
       main { padding: 16px 12px; gap: 14px; }
       .row { flex-direction: column; align-items: stretch; gap: 8px; }
       .row > div { display: flex; flex-direction: column; }
       button { width: 100%; min-width: auto; }
-      textarea { min-height: 100px; font-size: 16px; } /* prevent iOS zoom */
+      textarea { min-height: 100px; font-size: 16px; }
+      .debug-status-wrap { flex-direction: column; align-items: stretch; }
+      .debug-actions button { width: 100%; }
+      .debug-log { max-height: 180px; }
     }
   </style>
 </head>
 <body>
-  <header>🔊 Local TTS Demo — Kokoro (Browser)</header>
+  <header>🎙️ Local TTS Demo — Kokoro (Browser)</header>
   <main>
     <div>
       <label for="text-input">Text</label>
@@ -100,7 +188,7 @@
       >↻ Reset Piper</button>
     </div>
 
-    <button id="generate-btn" aria-label="Generate speech from text">⚡ Generate Speech</button>
+    <button id="generate-btn" aria-label="Generate speech from text">🎤 Generate Speech</button>
     <progress id="dl-progress" max="100" value="0" aria-label="Model download progress"></progress>
     <div id="progress" class="progress" role="status" aria-live="polite"></div>
 
@@ -114,6 +202,22 @@
     <div id="download-row" class="download-row">
       <button id="download-btn" aria-label="Download generated audio as WAV">⬇ Download WAV</button>
     </div>
+
+    <details id="debug-panel" class="debug-panel">
+      <summary>Debug log</summary>
+      <div class="debug-status-wrap">
+        <div id="debug-status" class="debug-status"></div>
+        <div class="debug-actions">
+          <button id="copy-debug-log-btn" aria-label="Copy debug log">Copy</button>
+          <button
+            id="clear-debug-log-btn"
+            aria-label="Clear debug log"
+            style="background:#444;"
+          >Clear</button>
+        </div>
+      </div>
+      <pre id="debug-log" class="debug-log" aria-live="polite"></pre>
+    </details>
   </main>
 
   <script type="module" src="./src/main.ts"></script>

@@ -12,6 +12,7 @@ import {
   loadKokoro,
   kokoroGenerate,
   kokoroVoices,
+  type KokoroChunkStats,
 } from "./engines/kokoro.js";
 import {
   getPiper,
@@ -19,6 +20,7 @@ import {
   resetPiperCache,
   piperGenerate,
   PIPER_RESET_FLAG,
+  type PiperChunkStats,
 } from "./engines/piper.js";
 import {
   textInput,
@@ -36,11 +38,18 @@ import {
   setBusy,
   showBar,
   populateVoiceDropdown,
+  appendDebugLog,
+  clearDebugLog,
+  setDebugStatus,
+  copyDebugLog,
+  copyDebugLogBtn,
+  clearDebugLogBtn,
 } from "./ui.js";
 import type { VoiceInfo } from "./ui.js";
 
-// ── Types ─────────────────────────────────────────────────────────────
+// Engine IDs and shared chunk logging types.
 type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper";
+type ChunkStats = KokoroChunkStats | PiperChunkStats;
 
 interface EngineState {
   id: EngineId;
@@ -49,7 +58,23 @@ interface EngineState {
   voices: VoiceInfo[];
 }
 
-// ── State ─────────────────────────────────────────────────────────────
+function summarizeText(input: string, maxLen = 140): string {
+  const flat = input.replace(/\s+/g, " ").trim();
+  if (flat.length <= maxLen) return flat;
+  return `${flat.slice(0, maxLen)}...`;
+}
+
+function logChunkStats(engine: string, stats: ChunkStats): void {
+  const amp = Number.isFinite(stats.maxAmplitude) ? stats.maxAmplitude : 0;
+  const ampLabel = amp <= 0 ? "silent" : `maxAmp=${amp.toFixed(6)}`;
+  appendDebugLog(
+    `[${engine}] chunk ${stats.chunkIndex}/${stats.totalChunks} textLen=${stats.text.length} sampleRate=${stats.sampleRate} samples=${stats.sampleCount} ${ampLabel} text="${summarizeText(
+      stats.text,
+    )}"`,
+  );
+}
+
+// State
 let currentWav: Blob | null = null;
 let currentEngine: EngineId = "kokoro-fp16";
 
@@ -92,7 +117,7 @@ const engines = new Map<EngineId, EngineState>([
   ],
 ]);
 
-// ── Engine switch ─────────────────────────────────────────────────────
+// Engine switch.
 async function onEngineSwitch(): Promise<void> {
   const id = engineSelect.value as EngineId;
   currentEngine = id;
@@ -118,16 +143,16 @@ async function onEngineSwitch(): Promise<void> {
       populateVoiceDropdown(state.voices);
     }
     showProgress("Ready. Type text and click Generate.");
+    appendDebugLog(`[engine-switch] selected ${id}`);
   } catch (e) {
-    showError(
-      `Engine load failed: ${e instanceof Error ? e.message : "Unknown error"}`,
-    );
+    showError(`Engine load failed: ${e instanceof Error ? e.message : "Unknown error"}`);
+    appendDebugLog(`[engine-switch] failed ${id} => ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     setBusy(false);
   }
 }
 
-// ── Generate ──────────────────────────────────────────────────────────
+// Generate.
 // ~20k chars covers ~3000 English words (avg ~6 chars/word incl. space) with
 // headroom. Both engines chunk internally (segmentText → per-chunk synth →
 // concat), so length is bounded by patience/RAM, not a single-call truncation.
@@ -137,30 +162,45 @@ const CHUNK_SIZE = 480;
 async function onGenerate(): Promise<void> {
   clearError();
   setBusy(true);
+  setDebugStatus("");
+  clearDebugLog();
 
   try {
-    // 1. Validate via @local-tts/core (shared with future API)
     const text = validateText(textInput.value, { maxLength: MAX_TEXT_LENGTH });
     const id = currentEngine;
+    appendDebugLog(`[${id}] generate start len=${text.length}`);
 
-    // 2. Synthesize
     let wavBuffer: ArrayBuffer;
     if (id.startsWith("kokoro-")) {
       const dtype = id.replace("kokoro-", "") as KokoroDtype;
       const tts = await loadKokoro(dtype);
       const voice = voiceSelect.value || undefined;
-      const chunks =
-        text.length > CHUNK_SIZE ? segmentText(text, CHUNK_SIZE) : [text];
+      const chunks = text.length > CHUNK_SIZE ? segmentText(text, CHUNK_SIZE) : [text];
+      appendDebugLog(`prepared ${chunks.length} chunk(s).`);
+      chunks.forEach((chunk, i) => {
+        appendDebugLog(
+          `input chunk ${i + 1}/${chunks.length} len=${chunk.length} text="${summarizeText(chunk)}"`,
+        );
+      });
+      appendDebugLog(`engine selected=${id}`);
       wavBuffer = await kokoroGenerate(
         tts,
         voice as Parameters<typeof kokoroGenerate>[1],
         chunks,
+        (stats) => logChunkStats("kokoro", stats),
       );
     } else {
-      wavBuffer = await piperGenerate(text, voiceSelect.value, false);
+      appendDebugLog("Preparing Piper chunks (chunk size is 480 inside engine).");
+      wavBuffer = await piperGenerate(
+        text,
+        voiceSelect.value,
+        false,
+        (stats) => logChunkStats("piper", stats),
+      );
     }
 
-    // 3. Display audio
+    appendDebugLog(`generate done. wavBytes=${wavBuffer.byteLength}`);
+
     const blob = new Blob([wavBuffer], { type: "audio/wav" });
     const url = URL.createObjectURL(blob);
     if (audioPlayer.src) URL.revokeObjectURL(audioPlayer.src);
@@ -168,15 +208,18 @@ async function onGenerate(): Promise<void> {
     playerRow.style.display = "block";
     currentWav = blob;
     downloadRow.classList.add("visible");
-    showProgress("✅ Done!");
+    setDebugStatus("Done. Download ready.");
+    showProgress("Done!");
   } catch (e) {
+    setDebugStatus("Generation failed. See log.");
     if (e instanceof TtsError) {
       showError(e.message);
     } else {
-      showError(
-        `Generation failed: ${e instanceof Error ? e.message : "Unknown error."}`,
-      );
+      showError(`Generation failed: ${e instanceof Error ? e.message : "Unknown error."}`);
     }
+    appendDebugLog(
+      `[${currentEngine}] generate failed => ${e instanceof Error ? e.message : "Unknown error"}`,
+    );
     showProgress("");
   } finally {
     setBusy(false);
@@ -184,7 +227,7 @@ async function onGenerate(): Promise<void> {
   }
 }
 
-// ── Download ──────────────────────────────────────────────────────────
+// Download
 function onDownload(): void {
   if (!currentWav) return;
   const url = URL.createObjectURL(currentWav);
@@ -197,37 +240,37 @@ function onDownload(): void {
   URL.revokeObjectURL(url);
 }
 
-// ── Service worker: COOP/COEP (cross-origin isolation) + app-shell cache ────
-// On a static host (GitHub Pages) we cannot set COOP/COEP headers, so the SW
-// injects them. The very first page load is NOT yet isolated; once the SW takes
-// control we reload once so SharedArrayBuffer / multithreaded WASM become
-// available.
+async function onCopyDebugLog(): Promise<void> {
+  try {
+    await copyDebugLog();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
+    showError(`Failed to copy debug log: ${msg}`);
+    setDebugStatus("Copy failed.");
+  }
+}
+
+// Service worker: COOP/COEP (cross-origin isolation) + app-shell cache
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker
     .register("sw.js")
     .then((reg) => {
-      if (
-        !self.crossOriginIsolated &&
-        reg.active &&
-        !navigator.serviceWorker.controller
-      ) {
+      if (!self.crossOriginIsolated && reg.active && !navigator.serviceWorker.controller) {
         window.location.reload();
       }
     })
     .catch(() => {});
 }
 
-// ── Init ──────────────────────────────────────────────────────────────
+// Init
 async function init(): Promise<void> {
-  // If a previous cache clear was blocked by OPFS locks, the page reloaded with
-  // this flag set. Now (clean load, no Piper handle open yet) flush succeeds.
   if (sessionStorage.getItem(PIPER_RESET_FLAG)) {
     sessionStorage.removeItem(PIPER_RESET_FLAG);
     try {
       await getPiper().flush();
       showProgress("Piper cache cleared.");
     } catch {
-      /* already released or empty */
+      // already released or empty
     }
   }
 
@@ -244,16 +287,19 @@ async function init(): Promise<void> {
   try {
     await onEngineSwitch();
   } catch (e) {
-    showError(
-      `Startup failed: ${e instanceof Error ? e.message : "Unknown error"}`,
-    );
+    showError(`Startup failed: ${e instanceof Error ? e.message : "Unknown error"}`);
     generateBtn.disabled = true;
   }
 }
 
-// ── Events ────────────────────────────────────────────────────────────
 engineSelect.addEventListener("change", onEngineSwitch);
 generateBtn.addEventListener("click", onGenerate);
 downloadBtn.addEventListener("click", onDownload);
 resetPiperBtn.addEventListener("click", resetPiperCache);
+copyDebugLogBtn.addEventListener("click", onCopyDebugLog);
+clearDebugLogBtn.addEventListener("click", () => {
+  clearDebugLog();
+  setDebugStatus("Debug log cleared.");
+});
+
 init();
