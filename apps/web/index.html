@@ -168,6 +168,13 @@
       margin: 0;
       color: #1a1a1a;
     }
+    .history-storage-label {
+      font-size: 0.78rem;
+      color: #999;
+      flex: 1;
+      text-align: right;
+      padding-right: 8px;
+    }
     #history-clear-btn {
       background: #555;
       font-size: 0.82rem;
@@ -305,11 +312,12 @@
 
     <section id="history-panel" aria-label="Generation history">
       <div class="history-header">
-        <h2>🕑 History</h2>
+        <h2>&#128336; History</h2>
+        <span id="history-storage-used" class="history-storage-label" aria-live="polite"></span>
         <button id="history-clear-btn" aria-label="Clear all history">Clear All</button>
       </div>
       <div id="history-list" role="list" aria-label="Past generations"></div>
-      <p id="history-empty" style="display:none;">No generations yet. Your WAV files will appear here.</p>
+      <p id="history-empty" style="display:none;">No generations yet. Your WAV files will appear here (up to 50 MB total).</p>
     </section>
 
     <details id="debug-panel" class="debug-panel">

@@ -12,8 +12,10 @@ import {
   listHistory,
   deleteHistoryEntry,
   clearHistory,
+  totalStorageBytes,
   relativeTime,
   formatBytes,
+  MAX_DB_BYTES,
   type HistoryEntry,
 } from "./ttsHistory.js";
 import type { KokoroDtype } from "./engines/kokoro.js";
@@ -443,9 +445,9 @@ async function onGenerate(): Promise<void> {
     setDebugStatus("Done. Download ready.");
     showProgress(`Done (${Math.round((performance.now() - generationStart) / 1000)}s).`);
 
-    // Persist to IndexedDB history (fire-and-forget).
+    // Persist to IndexedDB history (fire-and-forget; full text saved).
     saveHistoryEntry({
-      text: text.slice(0, 200),
+      text,
       engine: id,
       voice: voiceSelect.value || "",
       wavBlob: outputBlob,
@@ -567,7 +569,15 @@ function renderHistoryEntry(entry: HistoryEntry): HTMLElement {
 }
 
 async function refreshHistoryPanel(): Promise<void> {
-  const entries = await listHistory();
+  const [entries, usedBytes] = await Promise.all([listHistory(), totalStorageBytes()]);
+
+  // Update storage-used label.
+  const storageEl = document.getElementById("history-storage-used");
+  if (storageEl) {
+    const limitMB = MAX_DB_BYTES / (1024 * 1024);
+    storageEl.textContent = `${formatBytes(usedBytes)} / ${limitMB} MB`;
+  }
+
   historyList.innerHTML = "";
   historyUrls.forEach((url) => URL.revokeObjectURL(url));
   historyUrls.clear();

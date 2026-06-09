@@ -1,25 +1,30 @@
 /**
  * WAV generation history -- persisted in IndexedDB.
  *
- * Stores the last MAX_ENTRIES generations (oldest auto-pruned on save).
- * Each entry keeps the full WAV Blob so the user can re-play or re-download
- * without regenerating.
+ * Stores generations up to MAX_DB_BYTES (50 MB) of WAV data total.
+ * When a new entry would push the total over the limit the oldest entries
+ * are pruned automatically (keeping at least the entry just added).
+ * Each entry keeps the full WAV Blob and the full input text so the user
+ * can re-play, re-download, or inspect the original prompt.
  */
 
 const DB_NAME = "tts-history";
 const DB_VERSION = 1;
 const STORE = "entries";
-/** Maximum number of history entries to retain. Oldest are pruned automatically. */
-export const MAX_HISTORY_ENTRIES = 20;
+
+/** Total WAV bytes allowed across all history entries. Oldest are pruned on save. */
+export const MAX_DB_BYTES = 50 * 1024 * 1024; // 50 MB
 
 export interface HistoryEntry {
   /** Auto-assigned by IndexedDB on insert. */
   id?: number;
-  /** First 200 chars of the input text (for display). */
+  /** Full input text at the time of generation. */
   text: string;
   engine: string;
   voice: string;
+  /** The generated audio as a WAV Blob. */
   wavBlob: Blob;
+  /** Byte length of the WAV data (used for budget accounting). */
   byteLength: number;
   /** Unix timestamp (ms) when generation completed. */
   createdAt: number;
@@ -36,7 +41,8 @@ function openDb(): Promise<IDBDatabase> {
           keyPath: "id",
           autoIncrement: true,
         });
-        // Index by createdAt so we can iterate newest-first.
+        // Index by createdAt so we can iterate oldest-first for pruning
+        // and newest-first for display.
         store.createIndex("createdAt", "createdAt", { unique: false });
       }
     };
@@ -46,7 +52,10 @@ function openDb(): Promise<IDBDatabase> {
 }
 
 // -- CRUD -------------------------------------------------------------------
-/** Save a new entry and prune the oldest if over the limit. Returns the new id. */
+/**
+ * Save a new entry, then prune the oldest entries until the total WAV byte
+ * usage is at or below MAX_DB_BYTES.  Returns the new entry's id.
+ */
 export async function saveHistoryEntry(
   entry: Omit<HistoryEntry, "id">,
 ): Promise<number> {
@@ -54,30 +63,38 @@ export async function saveHistoryEntry(
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
     const store = tx.objectStore(STORE);
+
     const addReq = store.add(entry);
     addReq.onsuccess = () => {
       const newId = addReq.result as number;
-      // Prune oldest entries over the limit.
-      const countReq = store.count();
-      countReq.onsuccess = () => {
-        const count = countReq.result;
-        if (count > MAX_HISTORY_ENTRIES) {
-          // Open a cursor ordered by createdAt ascending (oldest first).
-          const idx = store.index("createdAt");
-          const cursorReq = idx.openCursor();
-          let toDelete = count - MAX_HISTORY_ENTRIES;
-          cursorReq.onsuccess = () => {
-            const cursor = cursorReq.result;
-            if (cursor && toDelete > 0) {
-              store.delete(cursor.primaryKey);
-              toDelete--;
-              cursor.continue();
-            }
-          };
+
+      // Scan all entries oldest-first to measure total and prune if over budget.
+      const idx = store.index("createdAt");
+      const snapshot: Array<{ id: number; byteLength: number }> = [];
+      const cursorReq = idx.openCursor(); // ascending = oldest first
+
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (cursor) {
+          const e = cursor.value as HistoryEntry;
+          snapshot.push({ id: e.id!, byteLength: e.byteLength });
+          cursor.continue();
+        } else {
+          // Cursor exhausted -- prune oldest until total <= MAX_DB_BYTES.
+          // Always keep at least one entry (the one just added, which is last).
+          let total = snapshot.reduce((s, e) => s + e.byteLength, 0);
+          let i = 0;
+          while (total > MAX_DB_BYTES && i < snapshot.length - 1) {
+            store.delete(snapshot[i]!.id);
+            total -= snapshot[i]!.byteLength;
+            i++;
+          }
+          resolve(newId);
         }
       };
-      resolve(newId);
+      cursorReq.onerror = () => reject(cursorReq.error);
     };
+    addReq.onerror = () => reject(addReq.error);
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -89,7 +106,7 @@ export async function listHistory(): Promise<HistoryEntry[]> {
     const tx = db.transaction(STORE, "readonly");
     const store = tx.objectStore(STORE);
     const idx = store.index("createdAt");
-    // Descending: use "prev" direction.
+    // Descending: "prev" direction gives newest first.
     const results: HistoryEntry[] = [];
     const cursorReq = idx.openCursor(null, "prev");
     cursorReq.onsuccess = () => {
@@ -116,7 +133,7 @@ export async function deleteHistoryEntry(id: number): Promise<void> {
   });
 }
 
-/** Wipe all history. */
+/** Wipe all history entries. */
 export async function clearHistory(): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
@@ -127,8 +144,32 @@ export async function clearHistory(): Promise<void> {
   });
 }
 
+/**
+ * Return the total WAV bytes currently stored.
+ * Useful for displaying storage usage in the UI.
+ */
+export async function totalStorageBytes(): Promise<number> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const store = tx.objectStore(STORE);
+    let total = 0;
+    const cursorReq = store.openCursor();
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (cursor) {
+        total += (cursor.value as HistoryEntry).byteLength;
+        cursor.continue();
+      } else {
+        resolve(total);
+      }
+    };
+    cursorReq.onerror = () => reject(cursorReq.error);
+  });
+}
+
 // -- Helpers ----------------------------------------------------------------
-/** Human-readable relative time (e.g. "2 min ago", "just now"). */
+/** Human-readable relative time (e.g. "2m ago", "just now"). */
 export function relativeTime(ts: number): string {
   const diff = Math.floor((Date.now() - ts) / 1000);
   if (diff < 5) return "just now";
@@ -138,7 +179,7 @@ export function relativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-/** Format bytes as KB / MB. */
+/** Format bytes as B / KB / MB. */
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
