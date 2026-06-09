@@ -1,5 +1,5 @@
-﻿/**
- * Kokoro ONNX engine Ã¢â‚¬â€ browser adapter via kokoro-js.
+/**
+ * Kokoro ONNX engine -- browser adapter via kokoro-js.
  *
  * Kokoro: 82M params, 24 kHz, 28 voices, Apache 2.0.
  *   FP32 ~326 MB (studio), FP16 ~163 MB (default), Q4 ~86 MB (mobile).
@@ -15,10 +15,10 @@ import { concatFloat32, encodeWav } from "@local-tts/core";
 import { showProgress, showBar } from "../ui.js";
 import type { VoiceInfo } from "../ui.js";
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Types Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Types ------------------------------------------------------------------
 export type KokoroDtype = "fp32" | "fp16" | "q4";
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Constants Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Constants --------------------------------------------------------------
 export const KOKORO_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
 export const KOKORO_SIZES: Record<KokoroDtype, string> = {
   fp32: "~326 MB",
@@ -28,13 +28,13 @@ export const KOKORO_SIZES: Record<KokoroDtype, string> = {
 
 const kokoroCache = new Map<KokoroDtype, KokoroTTS>();
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Helpers ----------------------------------------------------------------
 function fmtMB(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Device probe Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Device probe -----------------------------------------------------------
 async function probeDevice(): Promise<"webgpu" | "wasm"> {
   try {
     const gpu = (navigator as unknown as Record<string, unknown>).gpu as
@@ -55,16 +55,16 @@ export async function safeDevice(dtype: KokoroDtype): Promise<"webgpu" | "wasm">
   return probeDevice();
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Load Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Load -------------------------------------------------------------------
 export async function loadKokoro(dtype: KokoroDtype): Promise<KokoroTTS> {
   if (kokoroCache.has(dtype)) return kokoroCache.get(dtype)!;
   const device = await safeDevice(dtype);
   const label = `Kokoro ${dtype.toUpperCase()} (${KOKORO_SIZES[dtype]}) - ${device.toUpperCase()}`;
   showProgress(`Loading ${label}...`);
 
-  // transformers.js fires progress_callback per file: 'initiate' Ã¢â€ â€™ 'download' Ã¢â€ â€™
-  // 'progress' (with %, loaded/total bytes) Ã¢â€ â€™ 'done'. Surface a % bar so the
-  // 86Ã¢â‚¬â€œ326 MB first-load download isn't a silent wait.
+  // transformers.js fires progress_callback per file: 'initiate' -> 'download' ->
+  // 'progress' (with %, loaded/total bytes) -> 'done'. Surface a % bar so the
+  // 86-326 MB first-load download isn't a silent wait.
   const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, {
     dtype,
     device,
@@ -93,7 +93,7 @@ export async function loadKokoro(dtype: KokoroDtype): Promise<KokoroTTS> {
   return tts;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Voices Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Voices -----------------------------------------------------------------
 export function kokoroVoices(tts: KokoroTTS): VoiceInfo[] {
   const list = Object.entries(tts.voices).map(([id, info]) => ({
     id,
@@ -101,7 +101,7 @@ export function kokoroVoices(tts: KokoroTTS): VoiceInfo[] {
     language: info.language,
     grade: (info as Record<string, unknown>).overallGrade as string | undefined,
   }));
-  // Best quality first: "A" before "A-" before "B"Ã¢â‚¬Â¦; unknown grades last.
+  // Best quality first: "A" before "A-" before "B"; unknown grades last.
   const rank = (g?: string): number =>
     g ? g.charCodeAt(0) * 10 + (g.includes("-") ? 5 : 0) : 9999;
   return list.sort((a, b) => rank(a.grade) - rank(b.grade));
@@ -114,11 +114,13 @@ export type KokoroChunkStats = {
   sampleRate: number;
   sampleCount: number;
   maxAmplitude: number;
+  /** Number of retries needed because the first attempt produced all-zero PCM. */
+  silentRetries: number;
 };
 
 type ChunkLogger = (stats: KokoroChunkStats) => void;
 
-function maxAmplitude(samples: Float32Array): number {
+function measureMaxAmplitude(samples: Float32Array): number {
   let max = 0;
   for (const v of samples) {
     const abs = Math.abs(v);
@@ -127,14 +129,21 @@ function maxAmplitude(samples: Float32Array): number {
   return max;
 }
 
-// Ã¢â€â‚¬Ã¢â€â‚¬ Generate Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â€Ã¢â‚¬â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+// -- Generate ---------------------------------------------------------------
 /**
  * Synthesize text chunks with Kokoro, returning a single WAV ArrayBuffer.
  *
- * Single chunk Ã¢â€ â€™ fast path via `raw.toWav()`.
- * Multiple chunks Ã¢â€ â€™ concat raw PCM with 60ms silence gaps between sentences
+ * Single chunk -> fast path via `raw.toWav()`.
+ * Multiple chunks -> concat raw PCM with 60ms silence gaps between sentences
  * (better prosody than feeding one long block, avoids internal truncation).
+ *
+ * FP16/Q4 models occasionally emit all-zero PCM for a chunk due to quantization
+ * instability on certain text inputs. Silent chunks are retried up to
+ * SILENT_RETRY_LIMIT times; if still silent the chunk passes through as-is so
+ * the output is not truncated, and silentRetries reflects the attempt count.
  */
+const SILENT_RETRY_LIMIT = 2;
+
 export async function kokoroGenerate(
   tts: KokoroTTS,
   voice: GenerateOptions["voice"],
@@ -152,7 +161,8 @@ export async function kokoroGenerate(
         text: chunks[0] ?? "",
         sampleRate: r.sampling_rate ?? 24000,
         sampleCount: r.audio.length,
-        maxAmplitude: maxAmplitude(r.audio),
+        maxAmplitude: measureMaxAmplitude(r.audio),
+        silentRetries: 0,
       });
     }
     return raw.toWav();
@@ -161,10 +171,20 @@ export async function kokoroGenerate(
   const parts: Float32Array[] = [];
   let sampleRate = 24000;
   for (let i = 0; i < chunks.length; i++) {
-    showProgress(`Generating with KokoroÃ¢â‚¬Â¦ sentence ${i + 1}/${chunks.length}`);
     showProgress(`Generating with Kokoro... sentence ${i + 1}/${chunks.length}`);
-    const r = raw as unknown as { audio: Float32Array; sampling_rate?: number };
+
+    let raw = await tts.generate(chunks[i]!, { voice });
+    let r = raw as unknown as { audio: Float32Array; sampling_rate?: number };
     sampleRate = r.sampling_rate ?? sampleRate;
+
+    // Retry silent chunks -- FP16/Q4 can produce all-zero PCM on certain inputs.
+    let retries = 0;
+    while (retries < SILENT_RETRY_LIMIT && measureMaxAmplitude(r.audio) <= 0) {
+      retries++;
+      raw = await tts.generate(chunks[i]!, { voice });
+      r = raw as unknown as { audio: Float32Array; sampling_rate?: number };
+    }
+
     if (onChunk) {
       onChunk({
         chunkIndex: i + 1,
@@ -172,7 +192,8 @@ export async function kokoroGenerate(
         text: chunks[i] ?? "",
         sampleRate,
         sampleCount: r.audio.length,
-        maxAmplitude: maxAmplitude(r.audio),
+        maxAmplitude: measureMaxAmplitude(r.audio),
+        silentRetries: retries,
       });
     }
     parts.push(r.audio);
