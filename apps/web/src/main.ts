@@ -74,9 +74,33 @@ function logChunkStats(engine: string, stats: ChunkStats): void {
   );
 }
 
+function formatEta(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds <= 0) return "1s";
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function clearCurrentWav(): void {
+  if (!audioPlayer) return;
+  if (!audioPlayer.paused) audioPlayer.pause();
+  if (audioPlayer.src) {
+    URL.revokeObjectURL(audioPlayer.src);
+    audioPlayer.removeAttribute("src");
+    audioPlayer.load();
+  }
+  playerRow.style.display = "none";
+  downloadRow.classList.remove("visible");
+  currentWav = null;
+}
+
 // State
 let currentWav: Blob | null = null;
 let currentEngine: EngineId = "kokoro-fp16";
+let generationRunId = 0;
 
 const engines = new Map<EngineId, EngineState>([
   [
@@ -161,14 +185,39 @@ const CHUNK_SIZE = 480;
 
 async function onGenerate(): Promise<void> {
   clearError();
+  const runId = ++generationRunId;
   setBusy(true);
   setDebugStatus("");
   clearDebugLog();
+  clearCurrentWav();
+  showBar(0);
+  showProgress("Preparing generation...");
+
+  const generationStart = performance.now();
+  const generationEngine = currentEngine;
+  let totalChunkEstimate = 0;
+
+  const onChunk = (stats: ChunkStats): void => {
+    if (runId !== generationRunId) return;
+    const chunkCount = stats.chunkIndex;
+    totalChunkEstimate = stats.totalChunks;
+    logChunkStats(generationEngine, stats);
+    const elapsed = performance.now() - generationStart;
+    const avg = elapsed / Math.max(1, chunkCount);
+    const eta = avg * Math.max(0, totalChunkEstimate - chunkCount);
+    const pct = Math.max(0, Math.min(100, Math.round((chunkCount / totalChunkEstimate) * 100)));
+    const etaText = eta > 0 ? ` ETA ${formatEta(eta)}` : "";
+    showProgress(
+      `[${generationEngine}] generating ${chunkCount}/${totalChunkEstimate} chunks (${pct}%).${etaText}`,
+    );
+    showBar(pct);
+  };
 
   try {
     const text = validateText(textInput.value, { maxLength: MAX_TEXT_LENGTH });
     const id = currentEngine;
     appendDebugLog(`[${id}] generate start len=${text.length}`);
+    totalChunkEstimate = Math.max(1, Math.ceil(text.length / CHUNK_SIZE));
 
     let wavBuffer: ArrayBuffer;
     if (id.startsWith("kokoro-")) {
@@ -182,12 +231,15 @@ async function onGenerate(): Promise<void> {
           `input chunk ${i + 1}/${chunks.length} len=${chunk.length} text="${summarizeText(chunk)}"`,
         );
       });
+      totalChunkEstimate = chunks.length;
       appendDebugLog(`engine selected=${id}`);
       wavBuffer = await kokoroGenerate(
         tts,
         voice as Parameters<typeof kokoroGenerate>[1],
         chunks,
-        (stats) => logChunkStats("kokoro", stats),
+        (stats) => {
+          onChunk(stats);
+        },
       );
     } else {
       appendDebugLog("Preparing Piper chunks (chunk size is 480 inside engine).");
@@ -195,7 +247,9 @@ async function onGenerate(): Promise<void> {
         text,
         voiceSelect.value,
         false,
-        (stats) => logChunkStats("piper", stats),
+        (stats) => {
+          onChunk(stats);
+        },
       );
     }
 
@@ -208,9 +262,11 @@ async function onGenerate(): Promise<void> {
     playerRow.style.display = "block";
     currentWav = blob;
     downloadRow.classList.add("visible");
+    showBar(100);
     setDebugStatus("Done. Download ready.");
-    showProgress("Done!");
+    showProgress(`Done (${Math.round((performance.now() - generationStart) / 1000)}s).`);
   } catch (e) {
+    if (runId !== generationRunId) return;
     setDebugStatus("Generation failed. See log.");
     if (e instanceof TtsError) {
       showError(e.message);
@@ -222,6 +278,7 @@ async function onGenerate(): Promise<void> {
     );
     showProgress("");
   } finally {
+    if (runId !== generationRunId) return;
     setBusy(false);
     showBar(null);
   }
