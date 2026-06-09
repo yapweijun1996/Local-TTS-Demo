@@ -121,7 +121,7 @@ to add them; the engine catalog is in [`ENGINES.md`](ENGINES.md). Verified
 > These are "unknown / non-commercial" per §"Allowed vs not allowed" above and are
 > rejected at the verification gate regardless of audio quality.
 
-## ✅ Commercial-friendly engines we may add (verified 2026-06-07)
+## ✅ Commercial-friendly engines we may add (updated 2026-06-09)
 Beyond Kokoro / Piper / Chatterbox already in scope:
 
 | Engine | License | Runtime | Notes |
@@ -130,10 +130,49 @@ Beyond Kokoro / Piper / Chatterbox already in scope:
 | Higgs Audio V2 | Apache-2.0 | GPU sidecar | Multi-speaker |
 | Dia 1.6B | Apache-2.0 | GPU sidecar | Dialogue |
 | MeloTTS | MIT | CPU (Python/ONNX) | Multilingual, VITS |
-| Kitten TTS | Apache-2.0 | CPU / browser | 15–25 MB ultra-light |
+| KittenTTS | Apache-2.0 | browser / CPU | 15–25 MB ultra-light; English only |
+| Sherpa-ONNX / MATCHA-TTS | Apache-2.0 | browser WASM | <10 MB per language; CDN only |
+| **Supertonic v3** | **OpenRAIL-M** | browser (onnxruntime-web) | ⚠️ See note below |
+| piper-plus | MIT | browser WASM | Drop-in for archived rhasspy/piper; no eSpeak-ng GPL |
 
 Each still needs the full 7-layer check (incl. per-voice and runtime phonemizer)
 before it reaches the registry.
+
+### ⚠️ Supertonic v3 — OpenRAIL-M licence review required
+
+Supertonic v3 (released 2026-04-29, Supertone) uses the **OpenRAIL-M** (Open
+Responsible AI Licence – Model) for its weights; the SDK/sample code is MIT.
+
+OpenRAIL-M **does permit commercial use** but adds use-based restrictions absent
+from MIT/Apache-2.0:
+- Must not generate content that harasses, threatens, or demeans.
+- Must not generate voice without the subject's consent ("deepfake" clause).
+- Must include the licence and use-restriction notice in any distribution.
+
+**Impact for this project:**
+- Technical commercial use is allowed.
+- The behavioural restrictions are consistent with our existing content-policy
+  intentions (we do not intend to enable non-consensual voice cloning).
+- Decision: ✅ **Conditionally approved** — integrate Supertonic only with the
+  use-restriction notice surfaced in the engine registry's `license.json` and
+  in any user-facing documentation. Tag as `openrail-m` so the API's
+  `GET /api/engines` response exposes the licence tier to callers.
+- The project's blanket "Allowed: MIT / Apache-2.0 / BSD / MPL-2.0" list in
+  this file should be read as a minimum; OpenRAIL-M passes the commercial gate
+  with the additional notice requirement above.
+
+### piper-plus migration (rhasspy/piper archived 2025-10)
+
+`rhasspy/piper` is read-only as of October 2025. Active MIT-clean replacement:
+
+| Package | License | eSpeak-ng? | Languages | Status |
+|---------|---------|------------|-----------|--------|
+| `piper-plus` | MIT | ✗ (custom G2P) | 8 | ✅ Recommended |
+| `@mintplex-labs/piper-tts-web` | MIT | ✅ (bundled) | 30+ / 900+ voices | ✅ OK for full library; GPL risk if distributing the eSpeak WASM |
+
+Migrate all new Piper integrations to `piper-plus` for a GPL-free stack. The
+full 900+ voice library via `@mintplex-labs/piper-tts-web` still requires
+eSpeak-ng — keep it behind the G2P opt-in plugin pattern.
 
 ## Risk (PRD §22.1 expanded)
 Code license ≠ weight license ≠ voice license ≠ phonemizer license. All four must

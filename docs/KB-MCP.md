@@ -56,6 +56,34 @@ After each phase lands, `kb_add_item` into `local-tts-demo`:
 
 ## Session log
 
+### 2026-06-09 — Browser TTS landscape research + history feature + engine defaults
+
+**TTS landscape research (2026-06-09)** — 30-source sweep of all viable
+browser-first ONNX TTS engines. Full findings recorded in `docs/ENGINES.md`.
+Summary of usable engines for this project:
+
+| # | Engine | License | Size | Languages | Status |
+|---|--------|---------|------|-----------|--------|
+| 1 | Kokoro-82M v1.0 (`kokoro-js`) | Apache-2.0 | 86 MB (q4f16) | 9 | ✅ Integrated (default) |
+| 2 | Piper (`piper-plus`) | MIT | ~75 MB | 30+ / 900+ voices | ✅ Integrated (migrate from archived upstream) |
+| 3 | Supertonic v3 | OpenRAIL-M | 404 MB | 31 | 🔜 Can add — multilingual priority |
+| 4 | KittenTTS nano | Apache-2.0 | 25 MB | 1 (EN) | 🔜 Can add — low-footprint only |
+| 5 | Sherpa-ONNX / MATCHA-TTS | Apache-2.0 | <10 MB | 2 (EN/ZH) | 🔜 Can add — CDN only |
+| 6 | Chatterbox (GPU sidecar) | MIT | PyTorch | — | 🔮 Future |
+| 7 | Orpheus-TTS (GPU sidecar) | Apache-2.0 | PyTorch | EN+7 | 🔮 Future |
+
+Blocked (CC-BY-NC): MMS-TTS/VITS, OuteTTS, F5-TTS. Not viable: Parler-TTS, Orpheus browser.
+
+**IndexedDB history feature landed** — `ttsHistory.ts` new module; 50 MB byte-budget
+pruning; full input text saved; per-entry Play/Save/Delete; `#history-storage-used`
+badge. Commits: `c4a1d74`, `060cadb`.
+
+**Silent-chunk fix (Kokoro)** — split-fallback when G2P produces all-zero PCM after
+`SILENT_RETRY_LIMIT` retries. `generateSplitFallback()` splits at word boundary.
+
+**Default engine changed** — `kokoro-q4` (86 MB) is now the startup default instead
+of `kokoro-fp16` (163 MB). Commit `5d8f4e3`.
+
 ### 2026-06-07 — Code review, Q-1, refactor, a11y, naturalness, API Phase 2 start
 
 **Code review** — full architecture and code quality review. Key findings:
