@@ -66,9 +66,13 @@ function summarizeText(input: string, maxLen = 140): string {
 
 function logChunkStats(engine: string, stats: ChunkStats): void {
   const amp = Number.isFinite(stats.maxAmplitude) ? stats.maxAmplitude : 0;
-  const ampLabel = amp <= 0 ? "silent" : `maxAmp=${amp.toFixed(6)}`;
+  const ampLabel = amp <= 0 ? "SILENT" : `maxAmp=${amp.toFixed(6)}`;
+  const retryLabel =
+    "silentRetries" in stats && stats.silentRetries > 0
+      ? ` retries=${stats.silentRetries}`
+      : "";
   appendDebugLog(
-    `[${engine}] chunk ${stats.chunkIndex}/${stats.totalChunks} textLen=${stats.text.length} sampleRate=${stats.sampleRate} samples=${stats.sampleCount} ${ampLabel} text="${summarizeText(
+    `[${engine}] chunk ${stats.chunkIndex}/${stats.totalChunks} textLen=${stats.text.length} sampleRate=${stats.sampleRate} samples=${stats.sampleCount} ${ampLabel}${retryLabel} text="${summarizeText(
       stats.text,
     )}"`,
   );
@@ -190,8 +194,8 @@ async function onGenerate(): Promise<void> {
   setDebugStatus("");
   clearDebugLog();
   clearCurrentWav();
+  showProgress("Cleared previous output. Regenerating...");
   showBar(0);
-  showProgress("Preparing generation...");
 
   const generationStart = performance.now();
   const generationEngine = currentEngine;
