@@ -259,12 +259,12 @@ async function onGenerate(): Promise<void> {
 
     appendDebugLog(`generate done. wavBytes=${wavBuffer.byteLength}`);
 
-    const blob = new Blob([wavBuffer], { type: "audio/wav" });
-    const url = URL.createObjectURL(blob);
+    const outputBlob = new Blob([wavBuffer], { type: "audio/wav" });
+    const url = URL.createObjectURL(outputBlob);
     if (audioPlayer.src) URL.revokeObjectURL(audioPlayer.src);
     audioPlayer.src = url;
     playerRow.style.display = "block";
-    currentWav = blob;
+    currentWav = outputBlob;
     downloadRow.classList.add("visible");
     showBar(100);
     setDebugStatus("Done. Download ready.");
