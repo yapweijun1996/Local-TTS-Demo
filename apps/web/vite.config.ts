@@ -10,6 +10,10 @@ export default defineConfig({
     port: 5173,
     open: false,
   },
+  worker: {
+    // ES module format required for code-splitting builds (iife is incompatible).
+    format: "es",
+  },
   build: {
     target: "esnext",
   },
