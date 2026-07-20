@@ -1,16 +1,20 @@
 /// <reference lib="webworker" />
 
 import { segmentText, segmentByLanguage, validateText, resampleLinear, concatFloat32, encodeWav } from "@local-tts/core";
-import type { ProgressDetail } from "./ui.js";
+import type { ProgressDetail, ProgressReporter, VoiceInfo } from "./ui.js";
 import type { KokoroDtype } from "./engines/kokoro.js";
 import {
   loadKokoro,
+  kokoroVoices,
+  safeDevice,
   generateSegment,
   kokoroGenerate,
   type KokoroChunkStats,
 } from "./engines/kokoro.js";
 import {
   piperGenerate,
+  loadPiperVoices,
+  flushPiperCache,
   ensurePiperVoice,
   piperGenerateSegment,
   type PiperChunkStats,
@@ -34,10 +38,40 @@ interface CancelMessage {
   runId: number;
 }
 
-type WorkerMessage = GenerateMessage | CancelMessage;
+/**
+ * Load an engine and hand back its voice list.
+ *
+ * The worker is the ONLY place a model is loaded. The main thread used to call
+ * loadKokoro() itself just to read the voice list, which -- because a worker is
+ * a separate module realm with its own caches -- downloaded, compiled and
+ * retained the model a second time. Voices now come back over this message.
+ */
+interface PrepareMessage {
+  type: "prepare";
+  runId: number;
+  engine: EngineId;
+}
+
+/** Clear cached Piper voices from OPFS. The worker holds the OPFS handles. */
+interface ResetPiperMessage {
+  type: "reset-piper";
+  runId: number;
+}
+
+type WorkerMessage = GenerateMessage | CancelMessage | PrepareMessage | ResetPiperMessage;
 
 type WorkerResponse =
   | { type: "progress"; runId: number; message: string; pct?: number | null; detail?: ProgressDetail }
+  | {
+      type: "prepared";
+      runId: number;
+      voices: VoiceInfo[];
+      zhVoices?: VoiceInfo[];
+      /** Actual compute device chosen for this engine, e.g. "WASM" / "WEBGPU". */
+      device: string;
+      sampleRate: number;
+    }
+  | { type: "reset-piper-done"; runId: number; locked: boolean }
   | { type: "log"; runId: number; message: string }
   | { type: "chunk"; runId: number; engine: EngineId; stats: ChunkStats }
   | { type: "done"; runId: number; wavBuffer: ArrayBuffer }
@@ -100,6 +134,40 @@ function postError(runId: number, message: string): void {
 
 function postAborted(runId: number): void {
   postResponse({ type: "aborted", runId });
+}
+
+/**
+ * Load an engine and report its voices. Idempotent: the engine adapters cache
+ * their loaded models, so re-preparing an already-loaded engine is a near
+ * no-op and safe to call on every engine switch.
+ */
+async function prepareEngine(runId: number, engine: EngineId): Promise<void> {
+  const report: ProgressReporter = (message, pct, detail) =>
+    postProgress(runId, message, pct, detail);
+
+  let voices: VoiceInfo[] = [];
+  let zhVoices: VoiceInfo[] | undefined;
+  let device = "WASM";
+  let sampleRate = 24000;
+
+  if (engine.startsWith("kokoro-")) {
+    const dtype = engine.replace("kokoro-", "") as KokoroDtype;
+    device = (await safeDevice(dtype)).toUpperCase();
+    voices = kokoroVoices(await loadKokoro(dtype, report));
+  } else if (engine === "piper") {
+    voices = await loadPiperVoices(report);
+    sampleRate = 22050;
+  } else if (engine === "mixed") {
+    device = (await safeDevice(MIXED_KOKORO_DTYPE)).toUpperCase();
+    voices = kokoroVoices(await loadKokoro(MIXED_KOKORO_DTYPE, report));
+    const allPiper = await loadPiperVoices(report);
+    zhVoices = allPiper.filter((v) => v.language?.toLowerCase().startsWith("zh"));
+    sampleRate = MIXED_OUTPUT_RATE;
+  } else {
+    throw new Error(`Unsupported engine: ${engine}`);
+  }
+
+  postResponse({ type: "prepared", runId, voices, zhVoices, device, sampleRate });
 }
 
 async function generateWithKokoro(
@@ -251,6 +319,27 @@ async function generateWithMixed(runId: number, payload: GenerateMessage, text: 
     const wasActive = activeRuns.delete(message.runId);
     if (wasActive) {
       postAborted(message.runId);
+    }
+    return;
+  }
+
+  if (message.type === "prepare") {
+    try {
+      await prepareEngine(message.runId, message.engine);
+    } catch (e) {
+      postError(message.runId, e instanceof Error ? e.message : "Unknown error");
+    }
+    return;
+  }
+
+  if (message.type === "reset-piper") {
+    try {
+      const { locked } = await flushPiperCache((m, p, d) =>
+        postProgress(message.runId, m, p, d),
+      );
+      postResponse({ type: "reset-piper-done", runId: message.runId, locked });
+    } catch (e) {
+      postError(message.runId, e instanceof Error ? e.message : "Unknown error");
     }
     return;
   }

@@ -23,20 +23,10 @@ import {
   MAX_DB_BYTES,
   type HistoryEntry,
 } from "./ttsHistory.js";
-import type { KokoroDtype } from "./engines/kokoro.js";
-import {
-  loadKokoro,
-  kokoroVoices,
-  safeDevice,
-  type KokoroChunkStats,
-} from "./engines/kokoro.js";
-import {
-  getPiper,
-  loadPiperVoices,
-  resetPiperCache,
-  PIPER_RESET_FLAG,
-  type PiperChunkStats,
-} from "./engines/piper.js";
+// Type-only: erased at build time, so neither engine library is pulled into
+// the main bundle. All model loading now happens inside the worker.
+import type { KokoroChunkStats } from "./engines/kokoro.js";
+import type { PiperChunkStats } from "./engines/piper.js";
 import * as ui from "./ui.js";
 import type { VoiceInfo, ProgressDetail, Phase } from "./ui.js";
 
@@ -45,8 +35,12 @@ type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper" | "mixed";
 type LanguageId = "en" | "zh" | "auto";
 type ChunkStats = KokoroChunkStats | PiperChunkStats;
 
-/** Kokoro dtype the "mixed" pseudo-engine always uses for its English half. */
-const MIXED_KOKORO_DTYPE: KokoroDtype = "q4";
+/**
+ * sessionStorage flag: a Piper cache clear was blocked by open OPFS handles,
+ * so it is retried after the next reload. Lives here rather than in the engine
+ * because the engine now runs in a worker, which has no sessionStorage.
+ */
+const PIPER_RESET_FLAG = "piper-reset-pending";
 
 interface EngineMeta {
   id: EngineId;
@@ -115,6 +109,9 @@ interface EngineState {
   voices: VoiceInfo[];
   /** Mandarin (Piper) voice list — only populated for the "mixed" engine. */
   zhVoices?: VoiceInfo[];
+  /** Compute device the worker actually chose, reported back on prepare. */
+  device?: string;
+  sampleRate?: number;
 }
 
 const engineStates = new Map<EngineId, EngineState>();
@@ -213,6 +210,15 @@ type WorkerRequestMessage = {
 
 type WorkerResponseMessage =
   | { type: "progress"; runId: number; message: string; pct?: number | null; detail?: ProgressDetail }
+  | {
+      type: "prepared";
+      runId: number;
+      voices: VoiceInfo[];
+      zhVoices?: VoiceInfo[];
+      device: string;
+      sampleRate: number;
+    }
+  | { type: "reset-piper-done"; runId: number; locked: boolean }
   | { type: "log"; runId: number; message: string }
   | { type: "chunk"; runId: number; engine: EngineId; stats: ChunkStats }
   | { type: "done"; runId: number; wavBuffer: ArrayBuffer }
@@ -225,8 +231,22 @@ interface WorkerGenerationJob {
   onChunk: (stats: ChunkStats) => void;
 }
 
+interface PrepareResult {
+  voices: VoiceInfo[];
+  zhVoices?: VoiceInfo[];
+  device: string;
+  sampleRate: number;
+}
+
+interface PendingJob<T> {
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
 let ttsWorker: Worker | null = null;
 const workerJobs = new Map<number, WorkerGenerationJob>();
+const prepareJobs = new Map<number, PendingJob<PrepareResult>>();
+const resetJobs = new Map<number, PendingJob<boolean>>();
 const CANCELLED_ERROR = "Generation cancelled.";
 
 function getWorker(): Worker {
@@ -261,10 +281,6 @@ function reportProgress(runId: number, message: string, pct?: number | null, det
   ui.renderPhase(progressToPhase(message, pct, detail));
 }
 
-function createProgressPoster(runId: number): ui.ProgressReporter {
-  return (message, pct, detail) => reportProgress(runId, message, pct, detail);
-}
-
 function onTtsWorkerMessage(event: MessageEvent<WorkerResponseMessage>): void {
   const msg = event.data;
   if (!msg || typeof msg !== "object") return;
@@ -274,6 +290,23 @@ function onTtsWorkerMessage(event: MessageEvent<WorkerResponseMessage>): void {
     case "progress":
       reportProgress(msg.runId, msg.message, msg.pct, msg.detail);
       break;
+    case "prepared": {
+      const p = prepareJobs.get(msg.runId);
+      prepareJobs.delete(msg.runId);
+      p?.resolve({
+        voices: msg.voices,
+        zhVoices: msg.zhVoices,
+        device: msg.device,
+        sampleRate: msg.sampleRate,
+      });
+      break;
+    }
+    case "reset-piper-done": {
+      const r = resetJobs.get(msg.runId);
+      resetJobs.delete(msg.runId);
+      r?.resolve(msg.locked);
+      break;
+    }
     case "log":
       ui.appendDebugLog(`[worker] ${msg.message}`);
       break;
@@ -284,12 +317,26 @@ function onTtsWorkerMessage(event: MessageEvent<WorkerResponseMessage>): void {
       workerJobs.delete(msg.runId);
       if (job && msg.runId === generationRunId) job.resolve(msg.wavBuffer);
       break;
-    case "error":
-      workerJobs.delete(msg.runId);
-      if (job && msg.runId === generationRunId) {
-        job.reject(new Error(msg.message || "Generation failed in worker"));
+    case "error": {
+      // One error channel serves every request kind, so route it to whichever
+      // job is actually waiting on this runId.
+      const err = new Error(msg.message || "Worker request failed");
+      const p = prepareJobs.get(msg.runId);
+      if (p) {
+        prepareJobs.delete(msg.runId);
+        p.reject(err);
+        break;
       }
+      const r = resetJobs.get(msg.runId);
+      if (r) {
+        resetJobs.delete(msg.runId);
+        r.reject(err);
+        break;
+      }
+      workerJobs.delete(msg.runId);
+      if (job && msg.runId === generationRunId) job.reject(err);
       break;
+    }
     case "aborted":
       workerJobs.delete(msg.runId);
       if (job && msg.runId === generationRunId) job.reject(new Error(CANCELLED_ERROR));
@@ -299,9 +346,20 @@ function onTtsWorkerMessage(event: MessageEvent<WorkerResponseMessage>): void {
 
 function onTtsWorkerError(event: ErrorEvent): void {
   ui.appendDebugLog(`[worker] runtime error: ${event.message}`);
+  const err = new Error(event.message || "Worker runtime error");
+  // Every pending request must fail, or the UI hangs on a promise that can
+  // never settle now that the worker is dead.
   for (const [runId, job] of workerJobs) {
-    job.reject(new Error(event.message || "Worker runtime error"));
+    job.reject(err);
     workerJobs.delete(runId);
+  }
+  for (const [runId, job] of prepareJobs) {
+    job.reject(err);
+    prepareJobs.delete(runId);
+  }
+  for (const [runId, job] of resetJobs) {
+    job.reject(err);
+    resetJobs.delete(runId);
   }
 }
 
@@ -327,6 +385,32 @@ function startWorkerGenerate(
       } satisfies WorkerRequestMessage);
     } catch (e) {
       workerJobs.delete(runId);
+      reject(e);
+    }
+  });
+}
+
+function startWorkerPrepare(runId: number, engine: EngineId): Promise<PrepareResult> {
+  const worker = getWorker();
+  return new Promise((resolve, reject) => {
+    prepareJobs.set(runId, { resolve, reject });
+    try {
+      worker.postMessage({ type: "prepare", runId, engine });
+    } catch (e) {
+      prepareJobs.delete(runId);
+      reject(e);
+    }
+  });
+}
+
+function startWorkerResetPiper(runId: number): Promise<boolean> {
+  const worker = getWorker();
+  return new Promise((resolve, reject) => {
+    resetJobs.set(runId, { resolve, reject });
+    try {
+      worker.postMessage({ type: "reset-piper", runId });
+    } catch (e) {
+      resetJobs.delete(runId);
       reject(e);
     }
   });
@@ -371,6 +455,21 @@ function populateEngineDropdown(): void {
   ui.engineHint.textContent = ENGINE_META[currentEngine].hint;
 }
 
+function engineTitle(meta: EngineMeta): string {
+  return meta.label.replace(" · Recommended", "");
+}
+
+/**
+ * Repopulate a voice dropdown without discarding the user's pick.
+ * Engine switches re-send the whole list, and silently resetting the voice
+ * every time would undo a deliberate choice.
+ */
+function populatePreservingSelection(select: HTMLSelectElement, voices: VoiceInfo[]): void {
+  const previous = select.value;
+  ui.populateVoiceDropdown(voices, select);
+  if (previous && voices.some((v) => v.id === previous)) select.value = previous;
+}
+
 /** Voices the current engine can offer for the current language. */
 function voicesForCurrent(all: VoiceInfo[]): VoiceInfo[] {
   if (currentEngine !== "piper") return all;
@@ -404,32 +503,21 @@ async function onEngineSwitch(): Promise<void> {
   ui.setEngineIdentity(meta.label.replace(" · Recommended", ""), engineIdentityDetail());
   ui.renderPhase({ kind: "engine-loading", step: "Checking browser cache", pct: null });
 
-  const runId = generationRunId;
+  // A newer switch supersedes this one; the runId gate below drops stale replies.
+  const runId = ++generationRunId;
   try {
-    if (currentEngine.startsWith("kokoro-")) {
-      const dtype = currentEngine.replace("kokoro-", "") as KokoroDtype;
-      const tts = await loadKokoro(dtype, createProgressPoster(runId));
-      if (!state.ready) {
-        state.voices = kokoroVoices(tts);
-        state.ready = true;
-      }
-      ui.populateVoiceDropdown(voicesForCurrent(state.voices));
-    } else if (currentEngine === "piper") {
-      if (!state.ready) {
-        state.voices = await loadPiperVoices(createProgressPoster(runId));
-        state.ready = true;
-      }
-      ui.populateVoiceDropdown(voicesForCurrent(state.voices));
-    } else if (currentEngine === "mixed") {
-      const tts = await loadKokoro(MIXED_KOKORO_DTYPE, createProgressPoster(runId));
-      if (!state.ready) {
-        state.voices = kokoroVoices(tts);
-        const allPiper = await loadPiperVoices(createProgressPoster(runId));
-        state.zhVoices = allPiper.filter((v) => v.language?.toLowerCase().startsWith("zh"));
-        state.ready = true;
-      }
-      ui.populateVoiceDropdown(state.voices);
-      ui.populateVoiceDropdown(state.zhVoices ?? [], ui.zhVoiceSelect);
+    const prepared = await startWorkerPrepare(runId, currentEngine);
+    if (runId !== generationRunId) return;
+
+    state.voices = prepared.voices;
+    state.zhVoices = prepared.zhVoices;
+    state.device = prepared.device;
+    state.sampleRate = prepared.sampleRate;
+    state.ready = true;
+
+    populatePreservingSelection(ui.voiceSelect, voicesForCurrent(state.voices));
+    if (currentEngine === "mixed") {
+      populatePreservingSelection(ui.zhVoiceSelect, state.zhVoices ?? []);
       if ((state.zhVoices ?? []).length === 0) {
         ui.showError({
           title: "No Mandarin voice is available",
@@ -438,18 +526,24 @@ async function onEngineSwitch(): Promise<void> {
       }
     }
 
-    ui.setEngineIdentity(meta.label.replace(" · Recommended", ""), "Ready to generate on this device.");
+    ui.setEngineIdentity(engineTitle(meta), "Ready to generate on this device.");
     ui.renderPhase({ kind: "engine-ready" });
-    ui.appendDebugLog(`[engine-switch] selected ${currentEngine} (lang=${currentLanguage})`);
+    ui.appendDebugLog(
+      `[engine-switch] ${currentEngine} ready (lang=${currentLanguage}, device=${prepared.device})`,
+    );
   } catch (e) {
+    if (runId !== generationRunId) return;
     ui.showError(ui.toUserError(e, "load"));
     ui.renderPhase({ kind: "engine-failed" });
     ui.appendDebugLog(
       `[engine-switch] failed ${currentEngine} => ${e instanceof Error ? e.message : String(e)}`,
     );
   } finally {
-    ui.setControlsBusy(false);
-    void refreshAdvancedPanel();
+    // A superseded switch must not re-enable controls the newer one locked.
+    if (runId === generationRunId) {
+      ui.setControlsBusy(false);
+      void refreshAdvancedPanel();
+    }
   }
 }
 
@@ -766,17 +860,17 @@ async function onHistoryClear(): Promise<void> {
 // ── Advanced panel ────────────────────────────────────────────────────
 async function refreshAdvancedPanel(): Promise<void> {
   const meta = ENGINE_META[currentEngine];
-  ui.perfEngine.textContent = meta.label.replace(" · Recommended", "");
-  ui.perfRate.textContent = `${(meta.sampleRate / 1000).toFixed(2).replace(/\.?0+$/, "")} kHz`;
+  const state = stateOf(currentEngine);
+  ui.perfEngine.textContent = engineTitle(meta);
+  // Prefer what the worker actually resolved over the catalogue's expectation.
+  const rate = state.sampleRate ?? meta.sampleRate;
+  ui.perfRate.textContent = `${(rate / 1000).toFixed(2).replace(/\.?0+$/, "")} kHz`;
   ui.perfThreads.textContent = String(navigator.hardwareConcurrency || "unknown");
   ui.perfCoi.textContent = self.crossOriginIsolated ? "Yes" : "No";
 
-  let device = "WASM";
-  if (currentEngine.startsWith("kokoro-")) {
-    device = (await safeDevice(currentEngine.replace("kokoro-", "") as KokoroDtype)).toUpperCase();
-  }
+  const device = state.device ?? "—";
   ui.perfDevice.textContent = device;
-  ui.perfMeta.textContent = device;
+  ui.perfMeta.textContent = state.device ?? "";
 
   try {
     const est = await navigator.storage?.estimate?.();
@@ -792,11 +886,30 @@ async function refreshAdvancedPanel(): Promise<void> {
 }
 
 async function onResetPiperCache(): Promise<void> {
+  // The clear runs in the worker (it owns the OPFS handles), so restore
+  // whatever phase we were in once its progress messages stop.
+  const priorPhase = ui.getPhase();
   try {
-    await resetPiperCache(createProgressPoster(generationRunId));
+    const locked = await startWorkerResetPiper(++generationRunId);
+    if (locked) {
+      // OPFS refused while a SyncAccessHandle was open. A reload drops every
+      // handle; init() retries the clear on the next clean load.
+      sessionStorage.setItem(PIPER_RESET_FLAG, "1");
+      ui.showError({
+        title: "Reload to finish clearing the voice cache",
+        hint: "The voice files are still open. Reload this page and the cache is cleared automatically.",
+      });
+    } else {
+      ui.setDebugStatus("Piper voice cache cleared.");
+      // Voice lists came from files that no longer exist — force a re-prepare.
+      stateOf("piper").ready = false;
+      stateOf("mixed").ready = false;
+    }
     await refreshAdvancedPanel();
-  } catch {
-    // resetPiperCache already surfaces its own failures.
+  } catch (e) {
+    ui.showError(ui.toUserError(e, "load"));
+  } finally {
+    ui.renderPhase(priorPhase);
   }
 }
 
@@ -856,13 +969,15 @@ async function init(): Promise<void> {
   ui.clearResult();
   ui.renderPhase({ kind: "boot" });
 
+  // A previous clear was blocked by open OPFS handles. This load is clean, so
+  // retry it before anything touches the Piper cache again.
   if (sessionStorage.getItem(PIPER_RESET_FLAG)) {
     sessionStorage.removeItem(PIPER_RESET_FLAG);
     try {
-      await getPiper().flush();
-      ui.setDebugStatus("Piper cache cleared.");
+      await startWorkerResetPiper(++generationRunId);
+      ui.setDebugStatus("Piper voice cache cleared.");
     } catch {
-      // already released or empty
+      // Already released or empty — nothing to report.
     }
   }
 

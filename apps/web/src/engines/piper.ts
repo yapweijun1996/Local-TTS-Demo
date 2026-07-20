@@ -117,28 +117,32 @@ export async function loadPiperVoices(onProgress: ProgressReporter = noopProgres
 
 // -- Cache reset ------------------------------------------------------------
 /**
- * sessionStorage flag: a cache clear was blocked by OPFS locks; finish it
- * after the page reloads (clean load, no open SyncAccessHandle).
+ * Delete every cached Piper voice from OPFS.
+ *
+ * Worker-safe by construction: it reports `locked` instead of touching
+ * sessionStorage, because this now runs inside the TTS worker (which owns the
+ * Piper instance and therefore the OPFS handles) and workers have no
+ * sessionStorage. Persisting the retry-after-reload flag is the caller's job.
+ *
+ * `locked` means OPFS refused the delete while a SyncAccessHandle was still
+ * open; a page reload drops every handle so the retry can succeed.
  */
-export const PIPER_RESET_FLAG = "piper-reset-pending";
-
-export async function resetPiperCache(onProgress: ProgressReporter = noopProgress): Promise<void> {
-  onProgress("Clearing Piper model cache...");
+export async function flushPiperCache(
+  onProgress: ProgressReporter = noopProgress,
+): Promise<{ locked: boolean }> {
+  onProgress("Clearing Piper voice cache...");
   try {
     await getPiper().flush();
-    onProgress("Piper cache cleared. Select a voice and generate to re-download.");
+    onProgress("Piper voice cache cleared. It re-downloads on the next run.");
+    return { locked: false };
   } catch (e) {
-    // OPFS refuses to delete while Piper worker holds an open SyncAccessHandle
-    // (NoModificationAllowedError / InvalidStateError). Reload drops every handle;
-    // init() re-runs flush on the clean load.
     const name = e instanceof Error ? e.name : "";
     if (name === "NoModificationAllowedError" || name === "InvalidStateError") {
-      sessionStorage.setItem(PIPER_RESET_FLAG, "1");
-      onProgress("Releasing model locks - reloading to finish clearing cache...");
-      return;
+      return { locked: true };
     }
     // Cache was empty or the API is unavailable -- treat as already cleared.
-    onProgress("Piper cache cleared (was already empty).");
+    onProgress("Piper voice cache was already empty.");
+    return { locked: false };
   }
 }
 
