@@ -373,13 +373,10 @@ export function renderPhase(phase: Phase): void {
     case "engine-ready":
       setBadge(engineBadge, engineBadgeText, "success", "Ready");
       setProgress(false);
-      // "Ready" means the voice list is loaded. The worker keeps its own model
-      // instance, so the first generation still finishes a one-time warm-up —
-      // say so rather than letting that delay look like a stall.
-      setNote(
-        "success",
-        "Ready — model files stay cached. The first generation also finishes a one-time warm-up.",
-      );
+      // The worker loads the model during `prepare`, so "Ready" means the
+      // model is in memory and the next click synthesises immediately. There
+      // is no longer a warm-up hiding behind the first generation.
+      setNote("success", "Ready — model files are cached in this browser and work offline.");
       setGenerateButton("Generate Speech");
       cancelBtn.hidden = true;
       announce(`${engineLabel} is ready.`);

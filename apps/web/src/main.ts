@@ -426,6 +426,19 @@ function cancelWorkerRun(runId: number): void {
   ttsWorker?.postMessage({ type: "cancel", runId });
 }
 
+/**
+ * Abort an in-flight voice preview.
+ *
+ * Preview draws from the same `generationRunId` counter as a real run, so
+ * anything that bumps that counter orphans it: the worker's reply no longer
+ * matches the gate, the promise never settles, and the Preview button stays
+ * disabled on "Previewing…" forever. Callers that bump the counter must call
+ * this first.
+ */
+function cancelActivePreview(): void {
+  if (previewRunId !== null) cancelWorkerRun(previewRunId);
+}
+
 // ── Language → Engine → Voice ─────────────────────────────────────────
 function populateLanguageDropdown(): void {
   ui.languageSelect.innerHTML = "";
@@ -489,6 +502,7 @@ async function onEngineSwitch(): Promise<void> {
   const meta = ENGINE_META[currentEngine];
   const state = stateOf(currentEngine);
 
+  cancelActivePreview();
   ui.clearError();
   ui.engineHint.textContent = meta.hint;
   ui.setControlsBusy(true);
@@ -556,6 +570,7 @@ async function onGenerate(): Promise<void> {
     await onEngineSwitch();
     return;
   }
+  cancelActivePreview();
   if (generationRunId > 0) cancelWorkerRun(generationRunId);
 
   ui.clearError();
@@ -706,7 +721,11 @@ async function onPreviewVoice(): Promise<void> {
     previewAudio.src = URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
     await previewAudio.play().catch(() => {});
   } catch (e) {
-    ui.showError(ui.toUserError(e, "generate"));
+    // Superseded by a real generation or an engine switch — that is the user
+    // getting what they asked for, not a failure worth an error banner.
+    if (!(e instanceof Error && e.message === CANCELLED_ERROR)) {
+      ui.showError(ui.toUserError(e, "generate"));
+    }
   } finally {
     // Leave the phase exactly as it was — a preview must not overwrite a
     // result the user already generated.
