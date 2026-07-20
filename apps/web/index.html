@@ -3,339 +3,1170 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#1a1a1a" />
+  <meta name="theme-color" content="#f6f8fb" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#080d19" media="(prefers-color-scheme: dark)" />
   <meta name="description" content="Browser-first TTS — Kokoro & Piper ONNX, 100% local, no cloud" />
   <link rel="manifest" href="./manifest.json" />
   <link rel="icon" type="image/svg+xml" href="./icon.svg" />
-  <title>Local TTS Demo — Kokoro Browser</title>
+  <title>Local TTS — Text-to-Speech in your browser</title>
   <style>
+    /* ═══════════════════════════════════════════════════════════════════
+       1. TOKENS
+       ═══════════════════════════════════════════════════════════════════ */
+    :root {
+      /* Spacing — 4px base scale. Never use off-scale values. */
+      --space-1: 4px;   --space-2: 8px;   --space-3: 12px;  --space-4: 16px;
+      --space-5: 20px;  --space-6: 24px;  --space-8: 32px;  --space-12: 48px;
+
+      /* Radius */
+      --radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-pill: 999px;
+
+      /* Control sizing — 44px minimum interaction target (a11y). */
+      --control-h: 46px;
+      --btn-h: 52px;
+      --icon-btn: 44px;
+
+      /* Typography */
+      --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+                   "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                   "Liberation Mono", "Courier New", monospace;
+
+      /* Elevation */
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
+      --shadow-md: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+
+      /* Motion */
+      --ease: cubic-bezier(0.4, 0, 0.2, 1);
+      --dur: 160ms;
+
+      /* Colour — light */
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-2: #f1f5f9;
+      --text: #0f172a;
+      --text-2: #64748b;
+      --text-3: #94a3b8;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --primary-soft: #eff6ff;
+      --primary-text: #1d4ed8;
+      --on-primary: #ffffff;
+      --success: #16a34a;
+      --success-soft: #f0fdf4;
+      --success-text: #15803d;
+      --warning: #d97706;
+      --warning-soft: #fffbeb;
+      --warning-text: #b45309;
+      --danger: #dc2626;
+      --danger-soft: #fef2f2;
+      --danger-text: #b91c1c;
+      --focus: #60a5fa;
+      --log-bg: #0f172a;
+      --log-text: #e2e8f0;
+      color-scheme: light;
+    }
+
+    /* Dark tokens — applied when the OS prefers dark and the user has not
+       explicitly chosen light, or when the user explicitly chooses dark. */
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #080d19;
+        --surface: #111827;
+        --surface-2: #172033;
+        --text: #f8fafc;
+        --text-2: #94a3b8;
+        --text-3: #64748b;
+        --border: #263247;
+        --border-strong: #334155;
+        --primary: #3b82f6;
+        --primary-hover: #60a5fa;
+        --primary-soft: rgba(59, 130, 246, 0.14);
+        --primary-text: #93c5fd;
+        --on-primary: #ffffff;
+        --success: #22c55e;
+        --success-soft: rgba(34, 197, 94, 0.14);
+        --success-text: #4ade80;
+        --warning: #f59e0b;
+        --warning-soft: rgba(245, 158, 11, 0.14);
+        --warning-text: #fbbf24;
+        --danger: #ef4444;
+        --danger-soft: rgba(239, 68, 68, 0.14);
+        --danger-text: #fca5a5;
+        --focus: #60a5fa;
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+        --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+        --log-bg: #020617;
+        --log-text: #cbd5e1;
+        color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #080d19;
+      --surface: #111827;
+      --surface-2: #172033;
+      --text: #f8fafc;
+      --text-2: #94a3b8;
+      --text-3: #64748b;
+      --border: #263247;
+      --border-strong: #334155;
+      --primary: #3b82f6;
+      --primary-hover: #60a5fa;
+      --primary-soft: rgba(59, 130, 246, 0.14);
+      --primary-text: #93c5fd;
+      --on-primary: #ffffff;
+      --success: #22c55e;
+      --success-soft: rgba(34, 197, 94, 0.14);
+      --success-text: #4ade80;
+      --warning: #f59e0b;
+      --warning-soft: rgba(245, 158, 11, 0.14);
+      --warning-text: #fbbf24;
+      --danger: #ef4444;
+      --danger-soft: rgba(239, 68, 68, 0.14);
+      --danger-text: #fca5a5;
+      --focus: #60a5fa;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+      --log-bg: #020617;
+      --log-text: #cbd5e1;
+      color-scheme: dark;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       2. RESET
+       ═══════════════════════════════════════════════════════════════════ */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* Component `display` rules outrank the UA's `[hidden] { display: none }`,
+       so every `el.hidden = true` in ui.ts would silently render anyway.
+       This keeps the hidden attribute authoritative app-wide. */
+    [hidden] { display: none !important; }
+
+    html { -webkit-text-size-adjust: 100%; }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
-      color: #1a1a1a;
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 1.55;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100dvh;
       display: flex;
       flex-direction: column;
-    }
-    header {
-      background: #1a1a1a;
-      color: #fff;
-      padding: 16px 24px;
-      font-size: 1.1rem;
-      font-weight: 600;
-    }
-    main {
-      flex: 1;
-      max-width: 900px;
-      width: 100%;
-      margin: 0 auto;
-      padding: 24px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-    }
-    textarea {
-      width: 100%;
-      min-height: 120px;
-      padding: 12px;
-      font-size: 1rem;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-      resize: vertical;
-      font-family: inherit;
-    }
-    textarea:focus-visible {
-      outline: 2px solid #1a1a1a;
-      outline-offset: 2px;
-      border-color: #1a1a1a;
-    }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-    select, button {
-      padding: 10px 16px;
-      font-size: 0.95rem;
-      border-radius: 6px;
-      border: 1px solid #ccc;
-      font-family: inherit;
-    }
-    select:focus-visible, button:focus-visible {
-      outline: 2px solid #1a1a1a;
-      outline-offset: 2px;
-    }
-    button {
-      background: #1a1a1a;
-      color: #fff;
-      border: none;
-      cursor: pointer;
-      font-weight: 600;
-      min-width: 140px;
-    }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    button:hover:not(:disabled) { background: #333; }
-    progress {
-      width: 100%;
-      height: 8px;
-      display: none;
-    }
-    .progress {
-      font-size: 0.9rem;
-      color: #666;
-      min-height: 1.2em;
-    }
-    .error {
-      color: #d00;
-      background: #fdd;
-      padding: 12px;
-      border-radius: 6px;
-      font-size: 0.9rem;
-      display: none;
-    }
-    .error.visible { display: block; }
-    audio { width: 100%; margin-top: 4px; }
-    .download-row { display: none; }
-    .download-row.visible { display: flex; gap: 12px; align-items: center; }
-    label { font-weight: 600; font-size: 0.9rem; }
-    .debug-panel {
-      border: 1px solid #d9d9d9;
-      border-radius: 8px;
-      padding: 10px 12px 12px;
-      background: #fff;
-    }
-    .debug-panel summary {
-      font-weight: 600;
-      cursor: pointer;
-      margin-bottom: 8px;
-    }
-    .debug-status-wrap {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: center;
-      margin-bottom: 8px;
-      flex-wrap: wrap;
-    }
-    .debug-status {
-      color: #555;
-      font-size: 0.88rem;
-      min-height: 1.2em;
-      flex: 1;
-      word-break: break-all;
-    }
-    .debug-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .debug-actions button {
-      min-width: auto;
-      font-size: 0.84rem;
-      padding: 6px 12px;
-    }
-    .debug-log {
-      max-height: 230px;
-      overflow: auto;
-      padding: 10px;
-      margin: 0;
-      background: #111;
-      color: #e8e8e8;
-      border-radius: 6px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 0.82rem;
-      line-height: 1.4;
-      white-space: pre-wrap;
-      word-break: break-all;
-      border: 1px solid #222;
+      -webkit-font-smoothing: antialiased;
     }
 
-    /* -- History panel -- */
-    #history-panel {
-      border: 1px solid #d9d9d9;
-      border-radius: 8px;
-      background: #fff;
+    svg { display: block; flex: none; }
+    .icon { width: 18px; height: 18px; stroke-width: 1.75; }
+    .icon-sm { width: 15px; height: 15px; }
+    .icon-lg { width: 22px; height: 22px; }
+
+    :where(button, select, textarea, input) { font: inherit; color: inherit; }
+
+    /* One focus treatment for the entire app. */
+    :where(a, button, select, textarea, summary, [tabindex]):focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+      border-radius: var(--radius-sm);
+    }
+
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+
+    .skip-link {
+      position: absolute; left: var(--space-4); top: -100px; z-index: 100;
+      background: var(--primary); color: var(--on-primary);
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius-sm); text-decoration: none; font-weight: 600;
+    }
+    .skip-link:focus { top: var(--space-4); }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       3. HEADER
+       ═══════════════════════════════════════════════════════════════════ */
+    .app-header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 20;
+    }
+    .header-inner {
+      max-width: 1440px; margin: 0 auto;
+      padding: var(--space-3) var(--space-6);
+      display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-4);
+    }
+    .brand { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+    .brand-mark { color: var(--primary); }
+    .brand-name { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.01em; }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: var(--space-1);
+      font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+      padding: 3px var(--space-2);
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+    }
+    .badge-outline {
+      color: var(--primary-text);
+      border: 1px solid var(--primary);
+      background: var(--primary-soft);
+    }
+
+    .header-divider { width: 1px; height: 20px; background: var(--border); }
+
+    .live-tag {
+      display: inline-flex; align-items: center; gap: var(--space-2);
+      font-size: 0.85rem; font-weight: 600; color: var(--success-text);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+
+    .header-actions { display: flex; align-items: center; gap: var(--space-3); }
+
+    .theme-toggle {
+      display: flex; gap: 2px; padding: 3px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .theme-btn {
+      display: inline-flex; align-items: center; gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      min-height: 34px;
+      background: none; border: none; border-radius: 6px;
+      font-size: 0.85rem; font-weight: 600; color: var(--text-2);
+      cursor: pointer; transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+    }
+    .theme-btn:hover { color: var(--text); }
+    .theme-btn[aria-checked="true"] {
+      background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       4. LAYOUT
+       ═══════════════════════════════════════════════════════════════════ */
+    .app-main {
+      flex: 1; width: 100%; max-width: 1440px; margin: 0 auto;
+      padding: var(--space-8) var(--space-6) var(--space-12);
+    }
+    .workspace {
+      display: grid; gap: var(--space-6);
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+    }
+    .zone-main { display: flex; flex-direction: column; gap: var(--space-6); min-width: 0; }
+    .zone-side { display: flex; flex-direction: column; gap: var(--space-6); min-width: 0; }
+
+    @media (min-width: 1024px) {
+      .workspace { grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr); }
+      .zone-main     { grid-column: 1; grid-row: 1; }
+      .zone-side     { grid-column: 2; grid-row: 1; }
+      .zone-history  { grid-column: 1; grid-row: 2; }
+      .zone-advanced { grid-column: 2; grid-row: 2; }
+    }
+
+    /* ── Hero ── */
+    .hero h1 {
+      font-size: clamp(1.9rem, 1.3rem + 2vw, 2.5rem);
+      font-weight: 700; letter-spacing: -0.025em; line-height: 1.15;
+    }
+    .hero-sub {
+      margin-top: var(--space-2);
+      font-size: 1.05rem; color: var(--text-2);
+    }
+    .privacy-row {
+      margin-top: var(--space-4);
+      display: flex; flex-wrap: wrap; align-items: center;
+      gap: var(--space-2) var(--space-4);
+      list-style: none;
+    }
+    .privacy-row li {
+      display: flex; align-items: center; gap: var(--space-2);
+      font-size: 0.88rem; color: var(--text-2);
+    }
+    .privacy-row li + li {
+      border-left: 1px solid var(--border);
+      padding-left: var(--space-4);
+    }
+    .privacy-row .icon { color: var(--text-3); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       5. CARD
+       ═══════════════════════════════════════════════════════════════════ */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+    }
+    .card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: var(--space-3);
+      padding: var(--space-4) var(--space-5);
+      border-bottom: 1px solid var(--border);
+    }
+    .card-title {
+      display: flex; align-items: center; gap: var(--space-3);
+      font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em;
+    }
+    .card-title .icon { color: var(--primary); }
+    .card-title-sub { font-size: 0.85rem; font-weight: 400; color: var(--text-2); }
+    .card-body { padding: var(--space-5); }
+    .card-body > * + * { margin-top: var(--space-5); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       6. FORM CONTROLS
+       ═══════════════════════════════════════════════════════════════════ */
+    .field { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+    .field-head {
+      display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3);
+    }
+    .step-label { font-size: 0.95rem; font-weight: 600; }
+    .counter {
+      font-size: 0.82rem; color: var(--text-3);
+      font-variant-numeric: tabular-nums;
+    }
+    .counter.is-over { color: var(--danger); font-weight: 600; }
+
+    textarea {
+      width: 100%; min-height: 130px; resize: vertical;
+      padding: var(--space-3) var(--space-4);
+      font-size: 0.98rem; line-height: 1.6;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+    }
+    textarea::placeholder { color: var(--text-3); }
+    textarea:hover:not(:disabled) { border-color: var(--text-3); }
+    textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px var(--primary-soft);
+    }
+    textarea:disabled { background: var(--surface-2); color: var(--text-2); cursor: not-allowed; }
+
+    /* Native <select> kept for platform/a11y behaviour; chrome is drawn around it. */
+    .select-wrap { position: relative; display: block; min-width: 0; }
+    .select-wrap > .icon:first-child {
+      position: absolute; left: var(--space-3); top: 50%; transform: translateY(-50%);
+      color: var(--text-2); pointer-events: none;
+    }
+    .select-wrap > .select-chevron {
+      position: absolute; right: var(--space-3); top: 50%; transform: translateY(-50%);
+      color: var(--text-2); pointer-events: none;
+    }
+    select {
+      appearance: none; -webkit-appearance: none;
+      width: 100%; height: var(--control-h);
+      padding: 0 var(--space-8) 0 40px;
+      font-size: 0.92rem;
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      cursor: pointer; text-overflow: ellipsis;
+      transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+    }
+    select:hover:not(:disabled) { border-color: var(--text-3); }
+    select:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+    select:disabled { background: var(--surface-2); color: var(--text-3); cursor: not-allowed; }
+    .select-wrap:has(select:disabled) .icon { color: var(--text-3); }
+
+    .hint {
+      display: flex; align-items: flex-start; gap: var(--space-2);
+      font-size: 0.83rem; color: var(--text-2);
+    }
+    .hint .icon { color: var(--text-3); margin-top: 2px; }
+
+    /* ── Chips ── */
+    .chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+    .chip {
+      display: inline-flex; align-items: center; gap: var(--space-2);
+      min-height: 36px; padding: 0 var(--space-3);
+      background: var(--surface); color: var(--text-2);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      font-size: 0.85rem; font-weight: 500; cursor: pointer;
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+                  color var(--dur) var(--ease);
+    }
+    .chip:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
+    .chip:disabled { opacity: 0.5; cursor: not-allowed; }
+    .chip .icon { color: var(--text-3); }
+    .chip-tag {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em;
+      color: var(--primary-text); background: var(--primary-soft);
+      border-radius: 4px; padding: 1px 5px;
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       7. BUTTONS
+       ═══════════════════════════════════════════════════════════════════ */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: var(--space-2);
+      min-height: var(--control-h); padding: 0 var(--space-4);
+      border: 1px solid transparent; border-radius: var(--radius-sm);
+      font-size: 0.92rem; font-weight: 600; cursor: pointer;
+      white-space: nowrap;
+      transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+                  color var(--dur) var(--ease), opacity var(--dur) var(--ease);
+    }
+    .btn:disabled { cursor: not-allowed; }
+
+    .btn-primary { background: var(--primary); color: var(--on-primary); }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+    /* Loading ≠ disabled: keep full brand colour, only soften slightly. */
+    .btn-primary.is-loading { background: var(--primary); opacity: 0.9; cursor: progress; }
+    .btn-primary:disabled:not(.is-loading) {
+      background: var(--surface-2); color: var(--text-3);
+      border-color: var(--border);
+    }
+
+    .btn-secondary {
+      background: var(--surface); color: var(--text);
+      border-color: var(--border-strong);
+    }
+    .btn-secondary:hover:not(:disabled) { background: var(--surface-2); }
+    .btn-secondary:disabled { color: var(--text-3); background: var(--surface-2); }
+
+    .btn-ghost { background: none; color: var(--text-2); }
+    .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+
+    .btn-danger-soft {
+      background: var(--danger-soft); color: var(--danger-text);
+      border-color: transparent;
+    }
+    .btn-danger-soft:hover:not(:disabled) { background: var(--danger); color: #fff; }
+
+    .btn-block { width: 100%; }
+    .btn-lg { min-height: var(--btn-h); font-size: 1rem; border-radius: var(--radius-sm); }
+
+    /* Primary CTA: icon left, label centred, shortcut pinned right. */
+    .btn-cta { position: relative; }
+    .btn-cta .kbd { position: absolute; right: var(--space-3); }
+    .kbd {
+      display: inline-flex; align-items: center;
+      padding: 2px var(--space-2);
+      font-size: 0.75rem; font-weight: 600; font-family: var(--font-sans);
+      background: rgba(255, 255, 255, 0.18);
+      border-radius: 5px; color: inherit;
+    }
+    .btn-secondary .kbd, .btn:disabled .kbd { background: var(--surface-2); color: var(--text-3); }
+
+    .icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: var(--icon-btn); height: var(--icon-btn);
+      background: var(--surface); color: var(--text-2);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+                  border-color var(--dur) var(--ease);
+    }
+    .icon-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
+    .icon-btn.is-danger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); border-color: var(--danger); }
+    .icon-btn.is-round { border-radius: 50%; }
+    .icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Spinner used by any loading control. */
+    .spinner {
+      width: 16px; height: 16px; flex: none;
+      border: 2px solid currentColor; border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       8. STATUS / PROGRESS / NOTES
+       ═══════════════════════════════════════════════════════════════════ */
+    .status-pill {
+      display: inline-flex; align-items: center; gap: var(--space-2);
+      padding: var(--space-1) var(--space-3);
+      border-radius: var(--radius-pill);
+      font-size: 0.8rem; font-weight: 600;
+      background: var(--surface-2); color: var(--text-2);
+      white-space: nowrap;
+    }
+    .status-pill[data-tone="info"]    { background: var(--primary-soft); color: var(--primary-text); }
+    .status-pill[data-tone="success"] { background: var(--success-soft); color: var(--success-text); }
+    .status-pill[data-tone="warning"] { background: var(--warning-soft); color: var(--warning-text); }
+    .status-pill[data-tone="danger"]  { background: var(--danger-soft);  color: var(--danger-text); }
+    .status-pill .dot { animation: pulse 1.8s var(--ease) infinite; }
+    .status-pill[data-tone="neutral"] .dot, .status-pill[data-tone="success"] .dot { animation: none; }
+    @keyframes pulse { 50% { opacity: 0.35; } }
+
+    .engine-name { font-size: 1.05rem; font-weight: 600; }
+    .muted { color: var(--text-2); font-size: 0.87rem; }
+    .rule { border: none; border-top: 1px solid var(--border); }
+
+    .progress-block > * + * { margin-top: var(--space-2); }
+    .progress-row {
+      display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3);
+    }
+    .progress-label { font-size: 0.92rem; font-weight: 600; }
+    .progress-value { font-size: 0.92rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .progress-sub { font-size: 0.84rem; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+    .bar {
+      height: 6px; width: 100%;
+      background: var(--surface-2); border-radius: var(--radius-pill);
       overflow: hidden;
     }
-    .history-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 12px 16px;
-      border-bottom: 1px solid #e8e8e8;
-      gap: 12px;
+    .bar-fill {
+      height: 100%; width: 0%;
+      background: var(--primary); border-radius: inherit;
+      transition: width 240ms var(--ease);
     }
-    .history-header h2 {
-      font-size: 0.95rem;
-      font-weight: 600;
-      margin: 0;
-      color: #1a1a1a;
+    .bar.is-indeterminate .bar-fill {
+      width: 35%; animation: slide 1.4s var(--ease) infinite;
     }
-    .history-storage-label {
-      font-size: 0.78rem;
-      color: #999;
-      flex: 1;
-      text-align: right;
-      padding-right: 8px;
+    @keyframes slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(340%); }
     }
-    #history-clear-btn {
-      background: #555;
-      font-size: 0.82rem;
-      padding: 5px 12px;
-      min-width: auto;
-      border-radius: 5px;
+
+    .note {
+      display: flex; gap: var(--space-3); align-items: flex-start;
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius-md);
+      font-size: 0.86rem; line-height: 1.5;
     }
-    #history-clear-btn:hover:not(:disabled) { background: #333; }
-    #history-list {
-      display: flex;
-      flex-direction: column;
+    .note .icon { margin-top: 1px; flex: none; }
+    .note[data-tone="info"]    { background: var(--primary-soft); color: var(--primary-text); }
+    .note[data-tone="success"] { background: var(--success-soft); color: var(--success-text); }
+    .note[data-tone="warning"] { background: var(--warning-soft); color: var(--warning-text); }
+    .note[data-tone="neutral"] { background: var(--surface-2);    color: var(--text-2); }
+
+    .alert {
+      display: flex; gap: var(--space-3); align-items: flex-start;
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius-md);
+      background: var(--danger-soft); color: var(--danger-text);
+      border: 1px solid var(--danger);
+      font-size: 0.88rem;
     }
+    .alert-body { flex: 1; min-width: 0; }
+    .alert-title { font-weight: 600; }
+    .alert-hint { margin-top: 2px; opacity: 0.85; font-size: 0.84rem; }
+    .alert-action {
+      background: none; border: none; padding: 0;
+      color: inherit; font-size: 0.84rem; font-weight: 600;
+      text-decoration: underline; cursor: pointer;
+      margin-top: var(--space-2);
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       9. AUDIO RESULT
+       ═══════════════════════════════════════════════════════════════════ */
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: var(--space-2);
+      padding: var(--space-8) var(--space-5);
+      border: 1px dashed var(--border-strong);
+      border-radius: var(--radius-md);
+      text-align: center;
+    }
+    .empty-state .icon { color: var(--text-3); width: 40px; height: 40px; }
+    .empty-title { font-weight: 600; }
+    .empty-sub { font-size: 0.87rem; color: var(--text-2); max-width: 34ch; }
+
+    audio { width: 100%; height: 40px; display: block; }
+
+    .result-meta {
+      display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-4);
+      font-size: 0.87rem;
+    }
+    .result-meta dt { color: var(--text-2); }
+    .result-meta dd { font-weight: 500; text-align: right; }
+
+    .result-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+    .result-actions .btn { flex: 1 1 auto; }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       10. HISTORY
+       ═══════════════════════════════════════════════════════════════════ */
+    .history-list { display: flex; flex-direction: column; }
     .history-item {
-      padding: 12px 16px;
-      border-bottom: 1px solid #f0f0f0;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: var(--space-2) var(--space-4);
+      padding: var(--space-3) var(--space-5);
+      border-bottom: 1px solid var(--border);
     }
     .history-item:last-child { border-bottom: none; }
-    .history-meta {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    .history-time {
-      font-size: 0.8rem;
-      color: #888;
-    }
-    .history-engine {
-      font-size: 0.8rem;
-      background: #f0f0f0;
-      border-radius: 4px;
-      padding: 1px 6px;
-      color: #444;
-      font-weight: 500;
-    }
-    .history-size {
-      font-size: 0.8rem;
-      color: #aaa;
-      margin-left: auto;
-    }
+    .history-item:hover { background: var(--surface-2); }
     .history-text {
-      font-size: 0.88rem;
-      color: #333;
+      font-size: 0.9rem;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .history-facts {
+      display: flex; align-items: center; gap: var(--space-4);
+      font-size: 0.83rem; color: var(--text-2);
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
-    .history-actions {
-      display: flex;
-      gap: 8px;
-    }
-    .history-actions button {
-      font-size: 0.8rem;
-      padding: 5px 11px;
-      min-width: auto;
-      border-radius: 5px;
-    }
-    .history-play-btn { background: #1a7f3c; }
-    .history-play-btn:hover:not(:disabled) { background: #155f2d; }
-    .history-dl-btn { background: #0060b8; }
-    .history-dl-btn:hover:not(:disabled) { background: #004a8f; }
-    .history-del-btn { background: #a00; }
-    .history-del-btn:hover:not(:disabled) { background: #800; }
-    #history-empty {
-      padding: 20px 16px;
+    .history-facts .num { font-variant-numeric: tabular-nums; }
+    .history-actions { display: flex; gap: var(--space-2); }
+    .history-actions .icon-btn { width: 36px; height: 36px; }
+
+    .history-empty {
+      padding: var(--space-8) var(--space-5);
       text-align: center;
-      color: #aaa;
-      font-size: 0.88rem;
+    }
+    .history-empty .empty-title { margin-bottom: var(--space-1); }
+
+    @media (max-width: 720px) {
+      .history-item {
+        grid-template-columns: auto minmax(0, 1fr);
+        row-gap: var(--space-3);
+      }
+      .history-text { grid-column: 2; }
+      .history-facts { grid-column: 1 / -1; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+      .history-actions { grid-column: 1 / -1; }
+      .history-actions .icon-btn { flex: 1; width: auto; }
     }
 
-    @media (max-width: 480px) {
-      header { padding: 12px 16px; font-size: 1rem; }
-      main { padding: 16px 12px; gap: 14px; }
-      .row { flex-direction: column; align-items: stretch; gap: 8px; }
-      .row > div { display: flex; flex-direction: column; }
-      button { width: 100%; min-width: auto; }
-      textarea { min-height: 100px; font-size: 16px; }
-      .debug-status-wrap { flex-direction: column; align-items: stretch; }
-      .debug-actions button { width: 100%; }
-      .debug-log { max-height: 180px; }
+    /* ═══════════════════════════════════════════════════════════════════
+       11. ADVANCED (progressive disclosure)
+       ═══════════════════════════════════════════════════════════════════ */
+    .adv-list { display: flex; flex-direction: column; }
+    .adv-item { border-bottom: 1px solid var(--border); }
+    .adv-item:last-child { border-bottom: none; }
+    .adv-summary {
+      display: flex; align-items: center; gap: var(--space-3);
+      padding: var(--space-3) var(--space-5);
+      min-height: 48px;
+      cursor: pointer; list-style: none;
+      font-size: 0.92rem; font-weight: 500;
+      transition: background var(--dur) var(--ease);
+    }
+    .adv-summary::-webkit-details-marker { display: none; }
+    .adv-summary:hover { background: var(--surface-2); }
+    .adv-summary .icon { color: var(--text-2); }
+    .adv-summary .adv-name { flex: 1; min-width: 0; }
+    .adv-meta { font-size: 0.82rem; color: var(--text-3); font-variant-numeric: tabular-nums; }
+    .adv-summary .chevron { color: var(--text-3); transition: transform var(--dur) var(--ease); }
+    .adv-item[open] > .adv-summary .chevron { transform: rotate(180deg); }
+    .adv-panel { padding: 0 var(--space-5) var(--space-5); }
+    .adv-panel > * + * { margin-top: var(--space-3); }
+
+    .kv {
+      display: grid; grid-template-columns: auto 1fr;
+      gap: var(--space-2) var(--space-4); font-size: 0.86rem;
+    }
+    .kv dt { color: var(--text-2); }
+    .kv dd { text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+    .shortcut-list { display: flex; flex-direction: column; gap: var(--space-2); font-size: 0.86rem; }
+    .shortcut-list li { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); }
+    .shortcut-list .kbd {
+      background: var(--surface-2); color: var(--text-2);
+      border: 1px solid var(--border);
+    }
+
+    .log-toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+    .log-status { flex: 1; min-width: 0; font-size: 0.83rem; color: var(--text-2); }
+    .log-toolbar .btn { min-height: 36px; font-size: 0.83rem; padding: 0 var(--space-3); }
+    .debug-log {
+      max-height: 260px; overflow: auto;
+      padding: var(--space-3);
+      background: var(--log-bg); color: var(--log-text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .debug-log:empty::before { content: "No log output yet."; color: var(--text-3); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       12. FOOTER
+       ═══════════════════════════════════════════════════════════════════ */
+    .app-footer {
+      padding: var(--space-6);
+      border-top: 1px solid var(--border);
+    }
+    .footer-inner {
+      max-width: 1440px; margin: 0 auto;
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+      gap: var(--space-2) var(--space-4);
+      font-size: 0.83rem; color: var(--text-2);
+    }
+    .footer-inner .sep { color: var(--text-3); }
+    .footer-inner .icon { color: var(--success); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       13. RESPONSIVE
+       ═══════════════════════════════════════════════════════════════════ */
+    .grid-2 {
+      display: grid; gap: var(--space-4);
+      grid-template-columns: minmax(0, 1fr);
+    }
+    @media (min-width: 640px) {
+      .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+    }
+    .voice-row { display: flex; gap: var(--space-2); min-width: 0; }
+    .voice-row .select-wrap { flex: 1; }
+
+    @media (max-width: 767px) {
+      .header-inner { padding: var(--space-3) var(--space-4); }
+      .app-main { padding: var(--space-5) var(--space-4) var(--space-8); }
+      .card-body, .card-head { padding-left: var(--space-4); padding-right: var(--space-4); }
+      .history-item, .adv-summary, .adv-panel { padding-left: var(--space-4); padding-right: var(--space-4); }
+      /* The header cannot fit brand + badge + status + 3 controls at 375px.
+         Drop the decorative parts — "Runs locally" is restated in the hero,
+         and keep only the controls, as icons. */
+      .brand-name { font-size: 1.05rem; white-space: nowrap; }
+      .header-divider, .badge-outline, .live-tag, .theme-btn span { display: none; }
+      #settings-btn span { display: none; }
+      #settings-btn { padding: var(--space-2); min-width: 44px; min-height: 44px; }
+      .header-actions { gap: var(--space-2); }
+      /* Labels collapse to icons here, so restore the 44px touch target. */
+      .theme-btn { padding: var(--space-2); min-width: 44px; min-height: 44px; }
+      .history-actions .icon-btn { height: 44px; }
+      .voice-row { flex-direction: column; }
+      .result-actions .btn { flex: 1 1 100%; }
+      .privacy-row li + li { border-left: none; padding-left: 0; }
+      .privacy-row { gap: var(--space-2) var(--space-3); }
     }
   </style>
 </head>
 <body>
-  <header>🎙️ Local TTS Demo — Kokoro (Browser)</header>
-  <main>
-    <div>
-      <label for="text-input">Text</label>
-      <textarea
-        id="text-input"
-        aria-describedby="progress error"
-        placeholder="Enter text to convert to speech…"
-      >Hello, welcome to the Local TTS Demo. This is running entirely in your browser — no server, no API keys, no cloud.</textarea>
-    </div>
+  <a class="skip-link" href="#main">Skip to main content</a>
 
-    <div class="row">
-      <div>
-        <label for="voice-select">Voice</label>
-        <select id="voice-select" aria-label="Select a TTS voice"></select>
+  <!-- Icon sprite: one definition per glyph, referenced with <use>. -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+    <defs>
+      <g id="i-wave" fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="2">
+        <path d="M2 12h2M7 6v12M12 3v18M17 7v10M22 11h0M20 9v6" />
+      </g>
+      <g id="i-sun" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+      </g>
+      <g id="i-moon" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8" />
+      </g>
+      <g id="i-settings" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.1a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1z" />
+      </g>
+      <g id="i-cloud-off" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M3 3l18 18M9.9 5.3A6 6 0 0 1 18 10.5h.5a4 4 0 0 1 2.4 7.2M16 18H7a4 4 0 0 1-.9-7.9" />
+      </g>
+      <g id="i-key-off" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M3 3l18 18M14.5 9.5a3 3 0 1 0-4 4M21 3l-8.5 8.5M17 7l2 2M7.5 16.5 4 20l1.5 1.5" />
+      </g>
+      <g id="i-shield" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" />
+      </g>
+      <g id="i-globe" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18z" />
+      </g>
+      <g id="i-chevron-updown" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="m8 9 4-4 4 4M16 15l-4 4-4-4" />
+      </g>
+      <g id="i-chevron-down" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="m6 9 6 6 6-6" />
+      </g>
+      <g id="i-play" fill="currentColor" stroke="none"><path d="M8 5.1v13.8a1 1 0 0 0 1.5.9l11-6.9a1 1 0 0 0 0-1.7l-11-6.9A1 1 0 0 0 8 5.1z" /></g>
+      <g id="i-info" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <circle cx="12" cy="12" r="9" /><path d="M12 16v-5M12 8h0" />
+      </g>
+      <g id="i-alert" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0z" /><path d="M12 9v4M12 17h0" />
+      </g>
+      <g id="i-cpu" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" rx="1" />
+        <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3" />
+      </g>
+      <g id="i-clock" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+      </g>
+      <g id="i-trash" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6M10 11v6M14 11v6" />
+      </g>
+      <g id="i-download" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+      </g>
+      <g id="i-refresh" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6" />
+      </g>
+      <g id="i-x" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M18 6 6 18M6 6l12 12" />
+      </g>
+      <g id="i-database" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+      </g>
+      <g id="i-keyboard" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <rect x="2" y="6" width="20" height="12" rx="2" />
+        <path d="M6 10h0M10 10h0M14 10h0M18 10h0M6 14h12" />
+      </g>
+      <g id="i-terminal" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="m4 17 6-5-6-5M12 19h8" />
+      </g>
+      <g id="i-gauge" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM13.4 9.6 19 4M20.5 17a9.5 9.5 0 1 0-17 0" />
+      </g>
+      <g id="i-check" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+        <path d="M20 6 9 17l-5-5" />
+      </g>
+    </defs>
+  </svg>
+
+  <!-- ══ HEADER ══ -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <svg class="icon icon-lg brand-mark" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-wave" /></svg>
+        <span class="brand-name">Local TTS</span>
+        <span class="badge badge-outline">BROWSER</span>
+        <span class="header-divider"></span>
+        <span class="live-tag"><i class="dot"></i><span>Runs locally</span></span>
       </div>
-      <div>
-        <label for="engine-select">Engine</label>
-        <select id="engine-select" aria-label="Select a TTS engine"></select>
-      </div>
-      <button
-        id="reset-piper-btn"
-        aria-label="Clear Piper model cache and re-download"
-        style="background:#d00;font-size:0.8rem;min-width:auto;padding:6px 12px;"
-      >↻ Reset Piper</button>
-    </div>
-
-    <button id="generate-btn" aria-label="Generate speech from text">🎤 Generate Speech</button>
-    <button
-      id="cancel-btn"
-      aria-label="Cancel speech generation"
-      style="background:#a00000;display:none;"
-      disabled
-    >✖ Cancel</button>
-    <progress id="dl-progress" max="100" value="0" aria-label="Model download progress"></progress>
-    <div id="progress" class="progress" role="status" aria-live="polite"></div>
-
-    <div id="error" class="error" role="alert" aria-live="assertive"></div>
-
-    <div id="player-row" style="display:none;">
-      <label for="audio-player">Preview</label>
-      <audio id="audio-player" controls aria-label="Generated speech audio player"></audio>
-    </div>
-
-    <div id="download-row" class="download-row">
-      <button id="download-btn" aria-label="Download generated audio as WAV">⬇ Download WAV</button>
-    </div>
-
-    <section id="history-panel" aria-label="Generation history">
-      <div class="history-header">
-        <h2>&#128336; History</h2>
-        <span id="history-storage-used" class="history-storage-label" aria-live="polite"></span>
-        <button id="history-clear-btn" aria-label="Clear all history">Clear All</button>
-      </div>
-      <div id="history-list" role="list" aria-label="Past generations"></div>
-      <p id="history-empty" style="display:none;">No generations yet. Your WAV files will appear here (up to 50 MB total).</p>
-    </section>
-
-    <details id="debug-panel" class="debug-panel">
-      <summary>Debug log</summary>
-      <div class="debug-status-wrap">
-        <div id="debug-status" class="debug-status"></div>
-        <div class="debug-actions">
-          <button id="copy-debug-log-btn" aria-label="Copy debug log">Copy</button>
-          <button
-            id="clear-debug-log-btn"
-            aria-label="Clear debug log"
-            style="background:#444;"
-          >Clear</button>
+      <div class="header-actions">
+        <div class="theme-toggle" role="radiogroup" aria-label="Colour theme">
+          <button type="button" id="theme-light-btn" class="theme-btn" role="radio" aria-checked="false">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-sun" /></svg>
+            <span>Light</span>
+          </button>
+          <button type="button" id="theme-dark-btn" class="theme-btn" role="radio" aria-checked="false">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-moon" /></svg>
+            <span>Dark</span>
+          </button>
         </div>
+        <button type="button" id="settings-btn" class="btn btn-ghost">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-settings" /></svg>
+          <span>Settings</span>
+        </button>
       </div>
-      <pre id="debug-log" class="debug-log" aria-live="polite"></pre>
-    </details>
+    </div>
+  </header>
+
+  <main id="main" class="app-main">
+    <div class="workspace">
+
+      <!-- ══ LEFT: hero + compose ══ -->
+      <div class="zone-main">
+        <div class="hero">
+          <h1>Local Text-to-Speech</h1>
+          <p class="hero-sub">Generate natural speech entirely in your browser.</p>
+          <ul class="privacy-row">
+            <li><svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-cloud-off" /></svg>No cloud</li>
+            <li><svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-key-off" /></svg>No API key</li>
+            <li><svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield" /></svg>Your audio stays on this device</li>
+          </ul>
+        </div>
+
+        <section class="card" aria-labelledby="compose-heading">
+          <h2 id="compose-heading" class="sr-only">Compose speech</h2>
+          <div class="card-body">
+            <!-- 1. Text -->
+            <div class="field">
+              <div class="field-head">
+                <label class="step-label" for="text-input">1. Enter your text</label>
+                <span id="char-count" class="counter" aria-live="polite">0 / 20,000</span>
+              </div>
+              <textarea
+                id="text-input"
+                placeholder="Type or paste the text you want to hear…"
+                aria-describedby="char-count"
+              >Hello, welcome to the Local TTS Demo. This is running entirely in your browser — no server, no API keys, no cloud.</textarea>
+              <div class="chips">
+                <button type="button" id="sample-en-btn" class="chip">
+                  <span class="chip-tag">EN</span>English sample
+                </button>
+                <button type="button" id="sample-zh-btn" class="chip">
+                  <span class="chip-tag">中文</span>中文示例
+                </button>
+                <button type="button" id="clear-text-btn" class="chip">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash" /></svg>Clear
+                </button>
+              </div>
+            </div>
+
+            <!-- 2. Language + 3. Voice -->
+            <div class="grid-2">
+              <div class="field">
+                <label class="step-label" for="language-select">2. Language</label>
+                <div class="select-wrap">
+                  <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-globe" /></svg>
+                  <select id="language-select"></select>
+                  <svg class="icon icon-sm select-chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-updown" /></svg>
+                </div>
+              </div>
+              <div class="field">
+                <label class="step-label" for="voice-select">3. Voice</label>
+                <div class="voice-row">
+                  <div class="select-wrap">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-wave" /></svg>
+                    <select id="voice-select"></select>
+                    <svg class="icon icon-sm select-chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-updown" /></svg>
+                  </div>
+                  <button type="button" id="preview-btn" class="btn btn-secondary">
+                    <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-play" /></svg>
+                    <span id="preview-label">Preview</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Mandarin voice — only shown for the bilingual (auto-detect) mode. -->
+            <div class="field" id="zh-voice-row" hidden>
+              <label class="step-label" for="zh-voice-select">Mandarin voice</label>
+              <div class="select-wrap">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-wave" /></svg>
+                <select id="zh-voice-select"></select>
+                <svg class="icon icon-sm select-chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-updown" /></svg>
+              </div>
+            </div>
+
+            <!-- 4. Engine -->
+            <div class="field">
+              <label class="step-label" for="engine-select">4. Engine</label>
+              <div class="select-wrap">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-cpu" /></svg>
+                <select id="engine-select"></select>
+                <svg class="icon icon-sm select-chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-updown" /></svg>
+              </div>
+              <p class="hint">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-info" /></svg>
+                <span id="engine-hint">Optimised for speed and lower memory usage.</span>
+              </p>
+            </div>
+
+            <!-- Primary action -->
+            <button type="button" id="generate-btn" class="btn btn-primary btn-block btn-lg btn-cta">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" id="generate-icon"><use href="#i-wave" /></svg>
+              <span id="generate-label">Generate Speech</span>
+              <kbd class="kbd">⌘ Enter</kbd>
+            </button>
+            <button type="button" id="cancel-btn" class="btn btn-danger-soft btn-block" hidden>
+              <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-x" /></svg>
+              Cancel generation
+            </button>
+
+            <div id="error" class="alert" role="alert" hidden>
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-alert" /></svg>
+              <div class="alert-body">
+                <div class="alert-title" id="error-title"></div>
+                <div class="alert-hint" id="error-hint"></div>
+                <button type="button" class="alert-action" id="error-details-btn" hidden>View technical details</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ══ RIGHT: engine status + audio result ══ -->
+      <div class="zone-side">
+        <section class="card" aria-labelledby="engine-status-heading">
+          <div class="card-head">
+            <h2 class="card-title" id="engine-status-heading">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-cpu" /></svg>
+              Engine Status
+            </h2>
+            <span class="status-pill" id="engine-badge" data-tone="neutral">
+              <i class="dot"></i><span id="engine-badge-text">Idle</span>
+            </span>
+          </div>
+          <div class="card-body">
+            <div>
+              <p class="engine-name" id="engine-name">—</p>
+              <p class="muted" id="engine-sub">Select an engine to begin.</p>
+            </div>
+
+            <div id="engine-progress-block" class="progress-block" hidden>
+              <hr class="rule" />
+              <div class="progress-row">
+                <span class="progress-label" id="progress-label">Preparing…</span>
+                <span class="progress-value" id="progress-pct"></span>
+              </div>
+              <div class="progress-row progress-sub">
+                <span id="progress-bytes"></span>
+                <span id="progress-speed"></span>
+              </div>
+              <div
+                class="bar" id="progress-bar"
+                role="progressbar" aria-labelledby="progress-label"
+                aria-valuemin="0" aria-valuemax="100"
+              >
+                <div class="bar-fill" id="progress-fill"></div>
+              </div>
+            </div>
+
+            <div class="note" id="engine-note" data-tone="info">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-info" /></svg>
+              <span id="engine-note-text">Model files are downloaded once and stored in your browser cache.</span>
+            </div>
+
+            <!-- Screen-reader channel for phase changes. Visual state lives above. -->
+            <p class="sr-only" id="live-status" role="status" aria-live="polite"></p>
+          </div>
+        </section>
+
+        <section class="card" aria-labelledby="audio-result-heading">
+          <div class="card-head">
+            <h2 class="card-title" id="audio-result-heading">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-wave" /></svg>
+              Audio Result
+            </h2>
+            <span class="status-pill" id="result-badge" data-tone="neutral">
+              <span id="result-badge-text">Waiting</span>
+            </span>
+          </div>
+          <div class="card-body">
+            <div class="empty-state" id="result-empty">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-wave" /></svg>
+              <p class="empty-title">No audio generated yet</p>
+              <p class="empty-sub">Enter text and click Generate Speech to create audio.</p>
+            </div>
+
+            <div id="result-ready" hidden>
+              <audio id="audio-player" controls preload="metadata" aria-label="Generated speech"></audio>
+              <dl class="result-meta" style="margin-top: var(--space-4)">
+                <dt>Voice</dt><dd id="result-voice">—</dd>
+                <dt>Language</dt><dd id="result-language">—</dd>
+                <dt>Duration</dt><dd id="result-duration">—</dd>
+                <dt>Generated in</dt><dd id="result-elapsed">—</dd>
+              </dl>
+              <div class="result-actions" style="margin-top: var(--space-4)">
+                <button type="button" id="download-btn" class="btn btn-primary">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-download" /></svg>
+                  Download WAV
+                </button>
+                <button type="button" id="regenerate-btn" class="btn btn-secondary">
+                  <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh" /></svg>
+                  Generate Again
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ══ BOTTOM LEFT: history ══ -->
+      <section class="card zone-history" aria-labelledby="history-heading">
+        <div class="card-head">
+          <h2 class="card-title" id="history-heading">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock" /></svg>
+            Recent History
+            <span class="card-title-sub" id="history-storage-used"></span>
+          </h2>
+          <button type="button" id="history-clear-btn" class="btn btn-secondary" hidden>
+            <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-trash" /></svg>
+            Clear All
+          </button>
+        </div>
+        <div class="history-list" id="history-list" role="list"></div>
+        <div class="history-empty empty-state" id="history-empty" style="border:none">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-clock" /></svg>
+          <p class="empty-title">No generation history</p>
+          <p class="empty-sub">Your generated audio will appear here, up to 50 MB.</p>
+        </div>
+      </section>
+
+      <!-- ══ BOTTOM RIGHT: advanced ══ -->
+      <section class="card zone-advanced" id="advanced-panel" aria-labelledby="advanced-heading">
+        <div class="card-head">
+          <h2 class="card-title" id="advanced-heading">Advanced</h2>
+        </div>
+        <div class="adv-list">
+          <details class="adv-item" id="adv-performance">
+            <summary class="adv-summary">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-gauge" /></svg>
+              <span class="adv-name">Model &amp; Performance</span>
+              <span class="adv-meta" id="perf-meta"></span>
+              <svg class="icon icon-sm chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-down" /></svg>
+            </summary>
+            <div class="adv-panel">
+              <dl class="kv">
+                <dt>Engine</dt><dd id="perf-engine">—</dd>
+                <dt>Compute device</dt><dd id="perf-device">—</dd>
+                <dt>CPU threads</dt><dd id="perf-threads">—</dd>
+                <dt>Cross-origin isolated</dt><dd id="perf-coi">—</dd>
+                <dt>Output sample rate</dt><dd id="perf-rate">—</dd>
+              </dl>
+            </div>
+          </details>
+
+          <details class="adv-item" id="adv-cache">
+            <summary class="adv-summary">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-database" /></svg>
+              <span class="adv-name">Cache Management</span>
+              <span class="adv-meta" id="cache-meta"></span>
+              <svg class="icon icon-sm chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-down" /></svg>
+            </summary>
+            <div class="adv-panel">
+              <dl class="kv">
+                <dt>Browser storage used</dt><dd id="cache-used">—</dd>
+                <dt>Audio history</dt><dd id="cache-history">—</dd>
+              </dl>
+              <button type="button" id="reset-piper-btn" class="btn btn-secondary btn-block">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh" /></svg>
+                Clear Piper voice cache
+              </button>
+              <p class="hint">
+                <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-info" /></svg>
+                <span>Clearing the cache means the next run downloads the voice again.</span>
+              </p>
+            </div>
+          </details>
+
+          <details class="adv-item" id="adv-shortcuts">
+            <summary class="adv-summary">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-keyboard" /></svg>
+              <span class="adv-name">Keyboard Shortcuts</span>
+              <svg class="icon icon-sm chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-down" /></svg>
+            </summary>
+            <div class="adv-panel">
+              <ul class="shortcut-list">
+                <li><span>Generate speech</span><kbd class="kbd" id="kbd-generate">⌘ Enter</kbd></li>
+                <li><span>Cancel generation</span><kbd class="kbd">Esc</kbd></li>
+              </ul>
+            </div>
+          </details>
+
+          <details class="adv-item" id="adv-logs">
+            <summary class="adv-summary">
+              <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-terminal" /></svg>
+              <span class="adv-name">Developer Logs</span>
+              <svg class="icon icon-sm chevron" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-chevron-down" /></svg>
+            </summary>
+            <div class="adv-panel">
+              <div class="log-toolbar">
+                <span class="log-status" id="debug-status" aria-live="polite"></span>
+                <button type="button" id="copy-debug-log-btn" class="btn btn-secondary">Copy</button>
+                <button type="button" id="clear-debug-log-btn" class="btn btn-secondary">Clear</button>
+              </div>
+              <pre class="debug-log" id="debug-log"></pre>
+            </div>
+          </details>
+        </div>
+      </section>
+
+    </div>
   </main>
+
+  <footer class="app-footer">
+    <div class="footer-inner">
+      <span>Local TTS Demo</span>
+      <span class="sep">·</span>
+      <span>Runs entirely in your browser</span>
+      <span class="sep">·</span>
+      <span>Your privacy is protected</span>
+      <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-shield" /></svg>
+    </div>
+  </footer>
 
   <script type="module" src="./src/main.ts"></script>
 </body>

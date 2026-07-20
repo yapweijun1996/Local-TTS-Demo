@@ -1,15 +1,22 @@
 /// <reference lib="webworker" />
 
-import { segmentText, validateText } from "@local-tts/core";
+import { segmentText, segmentByLanguage, validateText, resampleLinear, concatFloat32, encodeWav } from "@local-tts/core";
+import type { ProgressDetail } from "./ui.js";
 import type { KokoroDtype } from "./engines/kokoro.js";
 import {
   loadKokoro,
+  generateSegment,
   kokoroGenerate,
   type KokoroChunkStats,
 } from "./engines/kokoro.js";
-import { piperGenerate, type PiperChunkStats } from "./engines/piper.js";
+import {
+  piperGenerate,
+  ensurePiperVoice,
+  piperGenerateSegment,
+  type PiperChunkStats,
+} from "./engines/piper.js";
 
-type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper";
+type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper" | "mixed";
 type ChunkStats = KokoroChunkStats | PiperChunkStats;
 
 interface GenerateMessage {
@@ -18,6 +25,8 @@ interface GenerateMessage {
   engine: EngineId;
   text: string;
   voice: string;
+  /** Piper voice id for Mandarin runs. Only used when `engine === "mixed"`. */
+  zhVoice?: string;
 }
 
 interface CancelMessage {
@@ -28,7 +37,7 @@ interface CancelMessage {
 type WorkerMessage = GenerateMessage | CancelMessage;
 
 type WorkerResponse =
-  | { type: "progress"; runId: number; message: string; pct?: number | null }
+  | { type: "progress"; runId: number; message: string; pct?: number | null; detail?: ProgressDetail }
   | { type: "log"; runId: number; message: string }
   | { type: "chunk"; runId: number; engine: EngineId; stats: ChunkStats }
   | { type: "done"; runId: number; wavBuffer: ArrayBuffer }
@@ -64,8 +73,13 @@ function postResponse(msg: WorkerResponse): void {
   (self as DedicatedWorkerGlobalScope).postMessage(payload);
 }
 
-function postProgress(runId: number, message: string, pct?: number | null): void {
-  postResponse({ type: "progress", runId, message, pct });
+function postProgress(
+  runId: number,
+  message: string,
+  pct?: number | null,
+  detail?: ProgressDetail,
+): void {
+  postResponse({ type: "progress", runId, message, pct, detail });
 }
 
 function postLog(runId: number, message: string): void {
@@ -97,7 +111,7 @@ async function generateWithKokoro(
   const dtype = payload.engine.replace("kokoro-", "") as KokoroDtype;
   const voice = payload.voice || undefined;
   postProgress(runId, `engine selected=${payload.engine}`);
-  const tts = await loadKokoro(dtype, (message, pct) => postProgress(runId, message, pct));
+  const tts = await loadKokoro(dtype, (message, pct, detail) => postProgress(runId, message, pct, detail));
   assertActive(runId);
   const chunks = text.length > CHUNK_SIZE ? segmentText(text, CHUNK_SIZE) : [text];
   postLog(runId, `prepared ${chunks.length} chunk(s).`);
@@ -115,7 +129,7 @@ async function generateWithKokoro(
       assertActive(runId);
       postChunk(runId, payload.engine, stats);
     },
-    (message, pct) => postProgress(runId, message, pct),
+    (message, pct, detail) => postProgress(runId, message, pct, detail),
   );
   assertActive(runId);
   postDone(runId, wavBuffer);
@@ -135,8 +149,96 @@ async function generateWithPiper(runId: number, payload: GenerateMessage, text: 
       assertActive(runId);
       postChunk(runId, payload.engine, stats);
     },
-    (message, pct) => postProgress(runId, message, pct),
+    (message, pct, detail) => postProgress(runId, message, pct, detail),
   );
+  assertActive(runId);
+  postDone(runId, wavBuffer);
+}
+
+// -- Mixed Mandarin/English ---------------------------------------------
+// Kokoro has no Mandarin G2P, so the English half always runs on Kokoro and
+// the Mandarin half always runs on Piper. Q4 is the fastest Kokoro dtype and
+// is CPU-safe at every dtype (see engines/kokoro.ts safeDevice), so it's the
+// fixed choice for the mixed English voice -- there is no dtype selector in
+// mixed mode. Output is standardized on Kokoro's 24 kHz rate; Piper segments
+// (22.05 kHz) are upsampled via resampleLinear before concatenation, since a
+// WAV has exactly one sample rate for its whole data chunk.
+const MIXED_KOKORO_DTYPE: KokoroDtype = "q4";
+const MIXED_OUTPUT_RATE = 24000;
+
+function peakAmplitude(samples: Float32Array): number {
+  let max = 0;
+  for (const v of samples) {
+    const abs = Math.abs(v);
+    if (abs > max) max = abs;
+  }
+  return max;
+}
+
+async function generateWithMixed(runId: number, payload: GenerateMessage, text: string): Promise<void> {
+  assertActive(runId);
+  const enVoice = payload.voice || undefined;
+  const zhVoiceId = payload.zhVoice || "";
+  if (!zhVoiceId) {
+    throw new Error("Please select a Mandarin (Piper) voice for mixed mode.");
+  }
+
+  postProgress(runId, "engine selected=mixed (Kokoro EN + Piper ZH)");
+  const tts = await loadKokoro(MIXED_KOKORO_DTYPE, (message, pct, detail) => postProgress(runId, message, pct, detail));
+  assertActive(runId);
+  await ensurePiperVoice(zhVoiceId, (message, pct, detail) => postProgress(runId, message, pct, detail));
+  assertActive(runId);
+
+  // Route each script run through the right engine, sub-chunking long runs
+  // the same way single-engine generation does (CHUNK_SIZE bound per call).
+  const languageSegments = segmentByLanguage(text);
+  const routed: Array<{ lang: "en" | "zh"; text: string }> = [];
+  for (const seg of languageSegments) {
+    const pieces = seg.text.length > CHUNK_SIZE ? segmentText(seg.text, CHUNK_SIZE) : [seg.text];
+    for (const piece of pieces) {
+      if (piece.trim().length > 0) routed.push({ lang: seg.lang, text: piece });
+    }
+  }
+  if (routed.length === 0) {
+    throw new Error("No speakable text after language segmentation.");
+  }
+  postLog(runId, `mixed: ${routed.length} routed segment(s) from ${languageSegments.length} language run(s).`);
+
+  const parts: Float32Array[] = [];
+  for (let i = 0; i < routed.length; i++) {
+    assertActive(runId);
+    const piece = routed[i]!;
+    postProgress(runId, `Generating mixed [${piece.lang}] sentence ${i + 1}/${routed.length}...`);
+
+    let audio: Float32Array;
+    let sourceRate: number;
+    if (piece.lang === "en") {
+      const seg = await generateSegment(tts, enVoice as Parameters<typeof kokoroGenerate>[1], piece.text);
+      audio = seg.audio;
+      sourceRate = seg.sampleRate;
+    } else {
+      const seg = await piperGenerateSegment(piece.text, zhVoiceId);
+      audio = seg.samples;
+      sourceRate = seg.sampleRate;
+    }
+    assertActive(runId);
+
+    const resampled = resampleLinear(audio, sourceRate, MIXED_OUTPUT_RATE);
+    postChunk(runId, payload.engine, {
+      chunkIndex: i + 1,
+      totalChunks: routed.length,
+      text: `[${piece.lang}] ${piece.text}`,
+      sampleRate: MIXED_OUTPUT_RATE,
+      sampleCount: resampled.length,
+      maxAmplitude: peakAmplitude(resampled),
+    });
+    parts.push(resampled);
+    if (i < routed.length - 1) {
+      parts.push(new Float32Array(Math.round(MIXED_OUTPUT_RATE * 0.06)));
+    }
+  }
+
+  const wavBuffer = encodeWav(concatFloat32(parts), { sampleRate: MIXED_OUTPUT_RATE });
   assertActive(runId);
   postDone(runId, wavBuffer);
 }
@@ -163,6 +265,8 @@ async function generateWithPiper(runId: number, payload: GenerateMessage, text: 
     } else if (message.engine === "piper") {
       postLog(message.runId, "Preparing Piper chunks (chunk size is 480 inside engine).");
       await generateWithPiper(message.runId, message, text);
+    } else if (message.engine === "mixed") {
+      await generateWithMixed(message.runId, message, text);
     } else {
       throw new Error(`Unsupported engine: ${message.engine}`);
     }

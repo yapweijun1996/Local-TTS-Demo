@@ -26,6 +26,12 @@ export interface HistoryEntry {
   wavBlob: Blob;
   /** Byte length of the WAV data (used for budget accounting). */
   byteLength: number;
+  /**
+   * Audio length in seconds. Optional because entries written before this field
+   * existed have none — IndexedDB stores records, not a fixed schema, so adding
+   * it needs no DB_VERSION bump. Render a fallback when it is absent.
+   */
+  durationSec?: number;
   /** Unix timestamp (ms) when generation completed. */
   createdAt: number;
 }

@@ -12,7 +12,11 @@
 
 import { KokoroTTS, type GenerateOptions } from "kokoro-js";
 import { concatFloat32, encodeWav } from "@local-tts/core";
-import type { VoiceInfo } from "../ui.js";
+// Type-only import: erased at compile time, so this module stays DOM-free and
+// remains safe to import from the worker.
+import type { VoiceInfo, ProgressDetail, ProgressReporter } from "../ui.js";
+
+export type { ProgressReporter };
 
 // -- Types ------------------------------------------------------------------
 export type KokoroDtype = "fp32" | "fp16" | "q4";
@@ -25,15 +29,71 @@ export const KOKORO_SIZES: Record<KokoroDtype, string> = {
   q4: "~86 MB",
 };
 
-export type ProgressReporter = (message: string, pct?: number | null) => void;
 const noopProgress: ProgressReporter = () => {};
 
 const kokoroCache = new Map<KokoroDtype, KokoroTTS>();
 
-// -- Helpers ----------------------------------------------------------------
-function fmtMB(bytes?: number): string {
-  if (!bytes || bytes <= 0) return "";
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+// -- Download aggregation ---------------------------------------------------
+/**
+ * transformers.js reports progress PER FILE, and discovers files lazily as the
+ * load proceeds -- so there is no grand total available up front. The UI needs
+ * one honest pair of numbers, which means summing per-file counters here.
+ *
+ * While new files are still being discovered the running total keeps climbing;
+ * quoting it as "of N MB" would look like a bug, so `estimating` stays true
+ * until the total has held steady for TOTAL_SETTLE_MS and the UI can safely
+ * switch from "X MB downloaded" to "X MB of N MB".
+ */
+const TOTAL_SETTLE_MS = 1200;
+
+class DownloadAggregator {
+  private readonly files = new Map<string, { loaded: number; total: number }>();
+  private readonly startedAt = Date.now();
+  private knownTotal = 0;
+  private totalChangedAt = Date.now();
+  private lastLoaded = 0;
+  private lastSampleAt = Date.now();
+  private speed = 0;
+
+  update(file: string, loaded: number, total: number): ProgressDetail {
+    this.files.set(file, { loaded, total });
+
+    let sumLoaded = 0;
+    let sumTotal = 0;
+    for (const f of this.files.values()) {
+      sumLoaded += f.loaded;
+      sumTotal += f.total;
+    }
+
+    const now = Date.now();
+    if (sumTotal > this.knownTotal) {
+      this.knownTotal = sumTotal;
+      this.totalChangedAt = now;
+    }
+
+    // Smooth the rate over ~500ms windows so the readout does not jitter.
+    const dt = now - this.lastSampleAt;
+    if (dt >= 500) {
+      const instant = ((sumLoaded - this.lastLoaded) * 1000) / dt;
+      this.speed = this.speed > 0 ? this.speed * 0.6 + instant * 0.4 : instant;
+      this.lastLoaded = sumLoaded;
+      this.lastSampleAt = now;
+    }
+
+    return {
+      loadedBytes: sumLoaded,
+      totalBytes: sumTotal,
+      bytesPerSec: Math.max(0, this.speed),
+      // Give discovery a moment before trusting the denominator.
+      estimating: now - this.totalChangedAt < TOTAL_SETTLE_MS && now - this.startedAt < 30_000,
+    };
+  }
+
+  /** Overall percentage across every file discovered so far. */
+  overallPct(detail: ProgressDetail): number | null {
+    if (detail.totalBytes <= 0) return null;
+    return Math.min(100, (detail.loadedBytes / detail.totalBytes) * 100);
+  }
 }
 
 // -- Device probe -----------------------------------------------------------
@@ -64,12 +124,15 @@ export async function loadKokoro(
 ): Promise<KokoroTTS> {
   if (kokoroCache.has(dtype)) return kokoroCache.get(dtype)!;
   const device = await safeDevice(dtype);
-  const label = `Kokoro ${dtype.toUpperCase()} (${KOKORO_SIZES[dtype]}) - ${device.toUpperCase()}`;
-  onProgress(`Loading ${label}...`, null);
+  const label = `Kokoro ${dtype.toUpperCase()} · ${device.toUpperCase()}`;
+  onProgress("Checking browser cache", null);
 
   // transformers.js fires progress_callback per file: 'initiate' -> 'download' ->
-  // 'progress' (with %, loaded/total bytes) -> 'done'. Surface a % bar so the
-  // 86-326 MB first-load download isn't a silent wait.
+  // 'progress' (with %, loaded/total bytes) -> 'done'. Aggregate across files so
+  // the UI can show one honest total instead of a per-file percentage that
+  // restarts at 0 several times.
+  const agg = new DownloadAggregator();
+
   const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, {
     dtype,
     device,
@@ -81,16 +144,18 @@ export async function loadKokoro(
         loaded?: number;
         total?: number;
       };
-      if (e.status === "progress" && typeof e.progress === "number") {
-        const pct = Math.min(100, Math.round(e.progress));
-        const size = e.total ? ` (${fmtMB(e.loaded)} / ${fmtMB(e.total)})` : "";
-        onProgress(`Downloading ${label} - ${pct}%${size}`, pct);
+      if (e.status === "progress" && typeof e.loaded === "number" && e.total) {
+        const detail = agg.update(e.file ?? "model", e.loaded, e.total);
+        onProgress("Downloading model files", agg.overallPct(detail), detail);
       } else if (e.status === "done") {
-        onProgress(`Preparing ${label}... (compiling model)`, null);
+        // Weights are in; ONNX Runtime still has to compile the graph, and that
+        // stall is long enough that calling it "downloading" would be a lie.
+        onProgress(`Compiling model for ${device.toUpperCase()}`, null);
       }
     },
   });
 
+  onProgress(`${label} ready`, 100);
   kokoroCache.set(dtype, tts);
   return tts;
 }
@@ -147,7 +212,7 @@ function measureMaxAmplitude(samples: Float32Array): number {
 const SILENT_RETRY_LIMIT = 2;
 
 /** Generate one text segment, retrying up to SILENT_RETRY_LIMIT times on silence. */
-async function generateSegment(
+export async function generateSegment(
   tts: KokoroTTS,
   voice: GenerateOptions["voice"],
   text: string,

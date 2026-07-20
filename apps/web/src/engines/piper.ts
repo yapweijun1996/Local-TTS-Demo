@@ -8,14 +8,15 @@
 
 import * as PiperLib from "@zahid0/piper-tts-web";
 import { segmentText, decodeWav, concatFloat32, encodeWav } from "@local-tts/core";
-import type { VoiceInfo } from "../ui.js";
+import type { VoiceInfo, ProgressReporter } from "../ui.js";
+
+export type { ProgressReporter };
 
 // Same chunk size as Kokoro (main.ts). Keeps the espeak-ng -> VITS phoneme tensor
 // per call bounded, so long input can't blow up memory in one synchronous run.
 const PIPER_CHUNK_SIZE = 480;
 /** Silence inserted between sentence chunks, in seconds (matches Kokoro pacing). */
 const GAP_SECONDS = 0.06;
-export type ProgressReporter = (message: string, pct?: number | null) => void;
 const noopProgress: ProgressReporter = () => {};
 
 // -- Types ------------------------------------------------------------------
@@ -105,6 +106,9 @@ export async function loadPiperVoices(onProgress: ProgressReporter = noopProgres
         name: v.name,
         language: v.language.code,
         languageLabel: g.label,
+        // Without the quality tier, same-speaker variants (huayan medium vs
+        // x_low) render as identical, indistinguishable options.
+        grade: v.quality,
       });
     }
   }
@@ -140,6 +144,40 @@ export async function resetPiperCache(onProgress: ProgressReporter = noopProgres
 
 // -- Generate ---------------------------------------------------------------
 /**
+ * Ensure a Piper voice model is downloaded to OPFS. Idempotent -- cheap no-op
+ * if already cached. Split out from {@link piperGenerate} so callers that
+ * synthesize many small segments against the same voice (e.g. mixed-language
+ * routing) only pay the download/cache-check cost once, not per segment.
+ */
+export async function ensurePiperVoice(
+  voiceId: string,
+  onProgress: ProgressReporter = noopProgress,
+): Promise<void> {
+  onProgress("Downloading Piper voice model (first time only)...");
+  await getPiper().download(voiceId, (p) => {
+    if (p.total > 0) {
+      const pct = Math.round((p.loaded / p.total) * 100);
+      onProgress(`Downloading voice... ${pct}%`, pct);
+    }
+  });
+  onProgress("Downloading Piper voice model (first time only)...", null);
+}
+
+/**
+ * Synthesize a single text segment against an already-downloaded voice,
+ * returning raw decoded PCM (no WAV re-encoding). Assumes {@link ensurePiperVoice}
+ * has already resolved for `voiceId` -- this does not download.
+ */
+export async function piperGenerateSegment(
+  text: string,
+  voiceId: string,
+): Promise<{ samples: Float32Array; sampleRate: number }> {
+  const blob = await getPiper().predict({ text, voiceId });
+  const decoded = decodeWav(await blob.arrayBuffer());
+  return { samples: decoded.samples, sampleRate: decoded.sampleRate || 22050 };
+}
+
+/**
  * Synthesize with Piper, returning a single WAV ArrayBuffer.
  *
  * First call downloads the voice model -> OPFS (cached for subsequent calls).
@@ -162,14 +200,7 @@ export async function piperGenerate(
   const P = getPiper();
   try {
     if (!isRetry) {
-      onProgress("Downloading Piper voice model (first time only)...");
-      await P.download(voiceId, (p) => {
-        if (p.total > 0) {
-          const pct = Math.round((p.loaded / p.total) * 100);
-          onProgress(`Downloading voice... ${pct}%`, pct);
-        }
-      });
-      onProgress("Downloading Piper voice model (first time only)...", null);
+      await ensurePiperVoice(voiceId, onProgress);
     }
 
     const chunks = segmentText(text, PIPER_CHUNK_SIZE);

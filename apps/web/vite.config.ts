@@ -7,7 +7,8 @@ export default defineConfig({
   base: "./",
   plugins: [crossOriginIsolation()],
   server: {
-    port: 5173,
+    // Default stays 5173; PORT lets a second dev server run alongside the first.
+    port: Number(process.env.PORT) || 5173,
     open: false,
   },
   worker: {

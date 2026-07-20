@@ -4,6 +4,11 @@
  * Wires UI events → engine adapters (Kokoro / Piper) → audio output.
  * Validation and text segmentation are delegated to @local-tts/core so the
  * browser app and the future Node API share identical text-handling behavior.
+ *
+ * Control model: Language is the primary choice and constrains Engine, because
+ * the engines genuinely differ in what they can speak — Kokoro has no Mandarin
+ * G2P, so offering "Kokoro + 中文" would be a dead option. Picking a language
+ * rebuilds the engine list to exactly what can serve it.
  */
 
 import { validateText, TtsError } from "@local-tts/core";
@@ -22,6 +27,7 @@ import type { KokoroDtype } from "./engines/kokoro.js";
 import {
   loadKokoro,
   kokoroVoices,
+  safeDevice,
   type KokoroChunkStats,
 } from "./engines/kokoro.js";
 import {
@@ -31,139 +37,187 @@ import {
   PIPER_RESET_FLAG,
   type PiperChunkStats,
 } from "./engines/piper.js";
-import {
-  textInput,
-  voiceSelect,
-  engineSelect,
-  generateBtn,
-  cancelBtn,
-  audioPlayer,
-  playerRow,
-  downloadBtn,
-  downloadRow,
-  resetPiperBtn,
-  showProgress,
-  showError,
-  clearError,
-  setBusy,
-  showBar,
-  populateVoiceDropdown,
-  appendDebugLog,
-  clearDebugLog,
-  setDebugStatus,
-  copyDebugLog,
-  copyDebugLogBtn,
-  clearDebugLogBtn,
-} from "./ui.js";
-import type { VoiceInfo } from "./ui.js";
+import * as ui from "./ui.js";
+import type { VoiceInfo, ProgressDetail, Phase } from "./ui.js";
 
-// Engine IDs and shared chunk logging types.
-type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper";
+// ── Engine + language catalogue ───────────────────────────────────────
+type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper" | "mixed";
+type LanguageId = "en" | "zh" | "auto";
 type ChunkStats = KokoroChunkStats | PiperChunkStats;
 
-interface EngineState {
+/** Kokoro dtype the "mixed" pseudo-engine always uses for its English half. */
+const MIXED_KOKORO_DTYPE: KokoroDtype = "q4";
+
+interface EngineMeta {
   id: EngineId;
+  /** Shown in the dropdown. */
   label: string;
-  ready: boolean;
-  voices: VoiceInfo[];
+  /** One line under the dropdown explaining the trade-off in plain words. */
+  hint: string;
+  /** Output sample rate, for the Advanced panel. */
+  sampleRate: number;
 }
 
+const ENGINE_META: Record<EngineId, EngineMeta> = {
+  "kokoro-q4": {
+    id: "kokoro-q4",
+    label: "Kokoro Q4 (Fast) · Recommended",
+    hint: "Optimised for speed and lower memory usage. About 86 MB of model weights.",
+    sampleRate: 24000,
+  },
+  "kokoro-fp16": {
+    id: "kokoro-fp16",
+    label: "Kokoro FP16 (Balanced)",
+    hint: "Higher quality, more memory. About 163 MB of model weights.",
+    sampleRate: 24000,
+  },
+  "kokoro-fp32": {
+    id: "kokoro-fp32",
+    label: "Kokoro FP32 (Studio)",
+    hint: "Best quality and the slowest to load. About 326 MB of model weights.",
+    sampleRate: 24000,
+  },
+  piper: {
+    id: "piper",
+    label: "Piper (50+ languages)",
+    hint: "MIT-licensed voices, roughly 50–75 MB per voice, downloaded on demand.",
+    sampleRate: 22050,
+  },
+  mixed: {
+    id: "mixed",
+    label: "Mixed 中英文 (Kokoro EN + Piper ZH)",
+    hint: "Detects English and Mandarin per sentence and routes each to the engine that speaks it.",
+    sampleRate: 24000,
+  },
+};
+
+interface LanguageMeta {
+  id: LanguageId;
+  label: string;
+  /** Engines able to serve this language, best default first. */
+  engines: EngineId[];
+}
+
+const LANGUAGES: LanguageMeta[] = [
+  { id: "en", label: "English", engines: ["kokoro-q4", "kokoro-fp16", "kokoro-fp32", "piper"] },
+  { id: "zh", label: "中文 (Mandarin)", engines: ["piper"] },
+  { id: "auto", label: "Auto Detect (English + 中文)", engines: ["mixed"] },
+];
+
+const SAMPLES: Record<"en" | "zh", string> = {
+  en: "Hello, welcome to the Local TTS Demo. This is running entirely in your browser — no server, no API keys, no cloud.",
+  zh: "你好，欢迎使用本地语音合成演示。所有运算都在你的浏览器里完成，不会上传任何文字。",
+};
+
+// ── State ─────────────────────────────────────────────────────────────
+interface EngineState {
+  ready: boolean;
+  voices: VoiceInfo[];
+  /** Mandarin (Piper) voice list — only populated for the "mixed" engine. */
+  zhVoices?: VoiceInfo[];
+}
+
+const engineStates = new Map<EngineId, EngineState>();
+function stateOf(id: EngineId): EngineState {
+  let s = engineStates.get(id);
+  if (!s) {
+    s = { ready: false, voices: [] };
+    engineStates.set(id, s);
+  }
+  return s;
+}
+
+let currentLanguage: LanguageId = "en";
+let currentEngine: EngineId = "kokoro-q4";
+let currentWav: Blob | null = null;
+let generationRunId = 0;
+let activeRunId = 0;
+
+// ── Small helpers ─────────────────────────────────────────────────────
 function summarizeText(input: string, maxLen = 140): string {
   const flat = input.replace(/\s+/g, " ").trim();
-  if (flat.length <= maxLen) return flat;
-  return `${flat.slice(0, maxLen)}...`;
+  return flat.length <= maxLen ? flat : `${flat.slice(0, maxLen)}...`;
 }
 
 function logChunkStats(engine: string, stats: ChunkStats): void {
   const amp = Number.isFinite(stats.maxAmplitude) ? stats.maxAmplitude : 0;
   const ampLabel = amp <= 0 ? "SILENT" : `maxAmp=${amp.toFixed(6)}`;
   const retryLabel =
-    "silentRetries" in stats && stats.silentRetries > 0
-      ? ` retries=${stats.silentRetries}`
-      : "";
-  appendDebugLog(
-    `[${engine}] chunk ${stats.chunkIndex}/${stats.totalChunks} textLen=${stats.text.length} sampleRate=${stats.sampleRate} samples=${stats.sampleCount} ${ampLabel}${retryLabel} text="${summarizeText(
-      stats.text,
-    )}"`,
+    "silentRetries" in stats && stats.silentRetries > 0 ? ` retries=${stats.silentRetries}` : "";
+  ui.appendDebugLog(
+    `[${engine}] chunk ${stats.chunkIndex}/${stats.totalChunks} textLen=${stats.text.length} sampleRate=${stats.sampleRate} samples=${stats.sampleCount} ${ampLabel}${retryLabel} text="${summarizeText(stats.text)}"`,
   );
 }
 
-function formatEta(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "";
-  const totalSeconds = Math.round(ms / 1000);
-  if (totalSeconds <= 0) return "1s";
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes <= 0) return `${seconds}s`;
-  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
-}
-
-function clearCurrentWav(): void {
-  if (!audioPlayer) return;
-  if (!audioPlayer.paused) audioPlayer.pause();
-  if (audioPlayer.src) {
-    URL.revokeObjectURL(audioPlayer.src);
-    audioPlayer.removeAttribute("src");
-    audioPlayer.load();
+/**
+ * Duration in seconds from a canonical PCM WAV buffer.
+ * Reads the fmt/data chunk headers instead of decoding the samples, so it stays
+ * cheap for multi-megabyte output. Returns 0 if the layout is unexpected.
+ */
+function wavDurationSec(buffer: ArrayBuffer): number {
+  try {
+    const view = new DataView(buffer);
+    if (view.byteLength < 44 || view.getUint32(0, false) !== 0x52494646) return 0; // "RIFF"
+    let offset = 12;
+    let sampleRate = 0;
+    let channels = 1;
+    let bitsPerSample = 16;
+    let dataBytes = 0;
+    while (offset + 8 <= view.byteLength) {
+      const id = view.getUint32(offset, false);
+      const size = view.getUint32(offset + 4, true);
+      if (id === 0x666d7420) {
+        // "fmt "
+        channels = view.getUint16(offset + 10, true) || 1;
+        sampleRate = view.getUint32(offset + 12, true);
+        bitsPerSample = view.getUint16(offset + 22, true) || 16;
+      } else if (id === 0x64617461) {
+        // "data"
+        dataBytes = size;
+        break;
+      }
+      offset += 8 + size + (size % 2);
+    }
+    const bytesPerFrame = channels * (bitsPerSample / 8);
+    if (!sampleRate || !bytesPerFrame) return 0;
+    return dataBytes / bytesPerFrame / sampleRate;
+  } catch {
+    return 0;
   }
-  playerRow.style.display = "none";
-  downloadRow.classList.remove("visible");
-  currentWav = null;
 }
 
-type WorkerRequestMessage =
-  | {
-      type: "generate";
-      runId: number;
-      engine: EngineId;
-      text: string;
-      voice: string;
-    };
+function voiceLabelFor(select: HTMLSelectElement): string {
+  const opt = select.selectedOptions[0];
+  return opt ? opt.textContent ?? opt.value : "—";
+}
 
-type WorkerProgressMessage = {
-  type: "progress";
-  runId: number;
-  message: string;
-  pct?: number | null;
-};
+function languageLabel(): string {
+  return LANGUAGES.find((l) => l.id === currentLanguage)?.label ?? "—";
+}
 
-type WorkerChunkMessage = {
-  type: "chunk";
+function engineIdentityDetail(): string {
+  const s = stateOf(currentEngine);
+  if (!s.ready) return "First-time setup · this only happens once.";
+  return "Ready to generate on this device.";
+}
+
+// ── Worker plumbing ───────────────────────────────────────────────────
+type WorkerRequestMessage = {
+  type: "generate";
   runId: number;
   engine: EngineId;
-  stats: ChunkStats;
-};
-
-type WorkerLogMessage = {
-  type: "log";
-  runId: number;
-  message: string;
-};
-
-type WorkerDoneMessage = {
-  type: "done";
-  runId: number;
-  wavBuffer: ArrayBuffer;
-};
-
-type WorkerErrorMessage = {
-  type: "error";
-  runId: number;
-  message: string;
-};
-
-type WorkerAbortedMessage = {
-  type: "aborted";
-  runId: number;
+  text: string;
+  voice: string;
+  zhVoice?: string;
 };
 
 type WorkerResponseMessage =
-  | WorkerProgressMessage
-  | WorkerChunkMessage
-  | WorkerLogMessage
-  | WorkerDoneMessage
-  | WorkerErrorMessage
-  | WorkerAbortedMessage;
+  | { type: "progress"; runId: number; message: string; pct?: number | null; detail?: ProgressDetail }
+  | { type: "log"; runId: number; message: string }
+  | { type: "chunk"; runId: number; engine: EngineId; stats: ChunkStats }
+  | { type: "done"; runId: number; wavBuffer: ArrayBuffer }
+  | { type: "error"; runId: number; message: string }
+  | { type: "aborted"; runId: number };
 
 interface WorkerGenerationJob {
   resolve: (wav: ArrayBuffer) => void;
@@ -171,66 +225,9 @@ interface WorkerGenerationJob {
   onChunk: (stats: ChunkStats) => void;
 }
 
-// State
-let currentWav: Blob | null = null;
-let currentEngine: EngineId = "kokoro-q4";
-let generationRunId = 0;
-let activeRunId = 0;
-
-const engines = new Map<EngineId, EngineState>([
-  [
-    "kokoro-fp32",
-    {
-      id: "kokoro-fp32",
-      label: "Kokoro FP32 (326 MB · studio quality)",
-      ready: false,
-      voices: [],
-    },
-  ],
-  [
-    "kokoro-fp16",
-    {
-      id: "kokoro-fp16",
-      label: "Kokoro FP16 (163 MB · best balance)",
-      ready: false,
-      voices: [],
-    },
-  ],
-  [
-    "kokoro-q4",
-    {
-      id: "kokoro-q4",
-      label: "Kokoro Q4 (86 MB · fast)",
-      ready: false,
-      voices: [],
-    },
-  ],
-  [
-    "piper",
-    {
-      id: "piper",
-      label: "Piper (50+ langs · MIT license)",
-      ready: false,
-      voices: [],
-    },
-  ],
-]);
-
 let ttsWorker: Worker | null = null;
 const workerJobs = new Map<number, WorkerGenerationJob>();
 const CANCELLED_ERROR = "Generation cancelled.";
-
-function createProgressPoster(runId: number): (message: string, pct?: number | null) => void {
-  return (message, pct) => {
-    if (runId !== generationRunId) return;
-    showProgress(message);
-    if (pct === null) {
-      showBar(null);
-    } else if (typeof pct === "number") {
-      showBar(pct);
-    }
-  };
-}
 
 function getWorker(): Worker {
   if (ttsWorker) return ttsWorker;
@@ -240,66 +237,72 @@ function getWorker(): Worker {
   return ttsWorker;
 }
 
+/**
+ * Translate an engine progress message into a phase.
+ *
+ * The engines report what they are actually doing ("Downloading model files",
+ * "Compiling model", "Generating…"). Anything that is not synthesis is a load
+ * step, so the UI can never label a download as generation.
+ */
+function progressToPhase(message: string, pct?: number | null, detail?: ProgressDetail): Phase {
+  const isSynthesis = /generat|synthesi/i.test(message);
+  if (isSynthesis) {
+    return { kind: "generating", step: message, pct: pct ?? null };
+  }
+  return { kind: "engine-loading", step: message, pct: pct ?? null, detail };
+}
+
+function reportProgress(runId: number, message: string, pct?: number | null, detail?: ProgressDetail): void {
+  // A voice preview is not a generation run. Routing its progress into the
+  // phase machine would make the main button read "Generating audio…" and leave
+  // the result badge stuck on "Generating" once the sample finished.
+  if (runId === previewRunId) return;
+  if (runId !== generationRunId) return;
+  ui.renderPhase(progressToPhase(message, pct, detail));
+}
+
+function createProgressPoster(runId: number): ui.ProgressReporter {
+  return (message, pct, detail) => reportProgress(runId, message, pct, detail);
+}
+
 function onTtsWorkerMessage(event: MessageEvent<WorkerResponseMessage>): void {
   const msg = event.data;
   if (!msg || typeof msg !== "object") return;
   const job = workerJobs.get(msg.runId);
 
   switch (msg.type) {
-    case "progress": {
-      if (msg.runId !== generationRunId) return;
-      showProgress(msg.message);
-      if (msg.pct === null) {
-        showBar(null);
-      } else if (typeof msg.pct === "number") {
-        showBar(msg.pct);
-      }
+    case "progress":
+      reportProgress(msg.runId, msg.message, msg.pct, msg.detail);
       break;
-    }
     case "log":
-      appendDebugLog(`[worker] ${msg.message}`);
+      ui.appendDebugLog(`[worker] ${msg.message}`);
       break;
-    case "chunk": {
-      if (msg.runId !== generationRunId) return;
-      if (job) {
-        job.onChunk(msg.stats);
+    case "chunk":
+      if (msg.runId === generationRunId && job) job.onChunk(msg.stats);
+      break;
+    case "done":
+      workerJobs.delete(msg.runId);
+      if (job && msg.runId === generationRunId) job.resolve(msg.wavBuffer);
+      break;
+    case "error":
+      workerJobs.delete(msg.runId);
+      if (job && msg.runId === generationRunId) {
+        job.reject(new Error(msg.message || "Generation failed in worker"));
       }
       break;
-    }
-    case "done": {
+    case "aborted":
       workerJobs.delete(msg.runId);
-      if (!job || msg.runId !== generationRunId) return;
-      job.resolve(msg.wavBuffer);
-      break;
-    }
-    case "error": {
-      workerJobs.delete(msg.runId);
-      if (!job || msg.runId !== generationRunId) return;
-      job.reject(new Error(msg.message || "Generation failed in worker"));
-      break;
-    }
-    case "aborted": {
-      workerJobs.delete(msg.runId);
-      if (!job || msg.runId !== generationRunId) return;
-      job.reject(new Error(CANCELLED_ERROR));
-      break;
-    }
-    default:
+      if (job && msg.runId === generationRunId) job.reject(new Error(CANCELLED_ERROR));
       break;
   }
 }
 
 function onTtsWorkerError(event: ErrorEvent): void {
-  appendDebugLog(`[worker] runtime error: ${event.message}`);
+  ui.appendDebugLog(`[worker] runtime error: ${event.message}`);
   for (const [runId, job] of workerJobs) {
     job.reject(new Error(event.message || "Worker runtime error"));
     workerJobs.delete(runId);
   }
-}
-
-function setGeneratingState(active: boolean): void {
-  cancelBtn.disabled = !active;
-  cancelBtn.style.display = active ? "inline-block" : "none";
 }
 
 function startWorkerGenerate(
@@ -308,6 +311,7 @@ function startWorkerGenerate(
   text: string,
   voice: string,
   onChunk: (stats: ChunkStats) => void,
+  zhVoice?: string,
 ): Promise<ArrayBuffer> {
   const worker = getWorker();
   return new Promise((resolve, reject) => {
@@ -319,6 +323,7 @@ function startWorkerGenerate(
         engine,
         text,
         voice,
+        zhVoice,
       } satisfies WorkerRequestMessage);
     } catch (e) {
       workerJobs.delete(runId);
@@ -334,155 +339,290 @@ function cancelWorkerRun(runId: number): void {
     workerJobs.delete(runId);
     job.reject(new Error(CANCELLED_ERROR));
   }
-  if (ttsWorker) {
-    ttsWorker.postMessage({ type: "cancel", runId });
-  }
+  ttsWorker?.postMessage({ type: "cancel", runId });
 }
 
-function onCancelGenerate(): void {
-  if (!activeRunId) return;
-  cancelWorkerRun(activeRunId);
+// ── Language → Engine → Voice ─────────────────────────────────────────
+function populateLanguageDropdown(): void {
+  ui.languageSelect.innerHTML = "";
+  for (const lang of LANGUAGES) {
+    const opt = document.createElement("option");
+    opt.value = lang.id;
+    opt.textContent = lang.label;
+    ui.languageSelect.appendChild(opt);
+  }
+  ui.languageSelect.value = currentLanguage;
+}
+
+/** Rebuild the engine list to exactly the engines that can speak the language. */
+function populateEngineDropdown(): void {
+  const lang = LANGUAGES.find((l) => l.id === currentLanguage)!;
+  ui.engineSelect.innerHTML = "";
+  for (const id of lang.engines) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = ENGINE_META[id].label;
+    ui.engineSelect.appendChild(opt);
+  }
+  if (!lang.engines.includes(currentEngine)) {
+    currentEngine = lang.engines[0]!;
+  }
+  ui.engineSelect.value = currentEngine;
+  ui.engineHint.textContent = ENGINE_META[currentEngine].hint;
+}
+
+/** Voices the current engine can offer for the current language. */
+function voicesForCurrent(all: VoiceInfo[]): VoiceInfo[] {
+  if (currentEngine !== "piper") return all;
+  const prefix = currentLanguage === "zh" ? "zh" : "en";
+  const filtered = all.filter((v) => v.language?.toLowerCase().startsWith(prefix));
+  return filtered.length > 0 ? filtered : all;
+}
+
+async function onLanguageChange(): Promise<void> {
+  currentLanguage = ui.languageSelect.value as LanguageId;
+  populateEngineDropdown();
+  await onEngineSwitch();
 }
 
 async function onEngineSwitch(): Promise<void> {
-  const id = engineSelect.value as EngineId;
-  currentEngine = id;
-  const state = engines.get(id)!;
-  clearError();
-  setBusy(true);
-  resetPiperBtn.style.display = id === "piper" ? "inline-block" : "none";
+  currentEngine = ui.engineSelect.value as EngineId;
+  const meta = ENGINE_META[currentEngine];
+  const state = stateOf(currentEngine);
 
+  ui.clearError();
+  ui.engineHint.textContent = meta.hint;
+  ui.setControlsBusy(true);
+  ui.zhVoiceRow.hidden = currentEngine !== "mixed";
+
+  // Say why the dropdown is empty instead of rendering a blank, broken-looking control.
+  if (!state.ready) {
+    ui.setVoicesLoading();
+    if (currentEngine === "mixed") ui.setVoicesLoading(ui.zhVoiceSelect);
+  }
+
+  ui.setEngineIdentity(meta.label.replace(" · Recommended", ""), engineIdentityDetail());
+  ui.renderPhase({ kind: "engine-loading", step: "Checking browser cache", pct: null });
+
+  const runId = generationRunId;
   try {
-    if (id.startsWith("kokoro-")) {
-      const dtype = id.replace("kokoro-", "") as KokoroDtype;
-      const tts = await loadKokoro(dtype, createProgressPoster(generationRunId));
+    if (currentEngine.startsWith("kokoro-")) {
+      const dtype = currentEngine.replace("kokoro-", "") as KokoroDtype;
+      const tts = await loadKokoro(dtype, createProgressPoster(runId));
       if (!state.ready) {
         state.voices = kokoroVoices(tts);
         state.ready = true;
       }
-      populateVoiceDropdown(state.voices);
-    } else if (id === "piper") {
+      ui.populateVoiceDropdown(voicesForCurrent(state.voices));
+    } else if (currentEngine === "piper") {
       if (!state.ready) {
-        state.voices = await loadPiperVoices(createProgressPoster(generationRunId));
+        state.voices = await loadPiperVoices(createProgressPoster(runId));
         state.ready = true;
       }
-      populateVoiceDropdown(state.voices);
+      ui.populateVoiceDropdown(voicesForCurrent(state.voices));
+    } else if (currentEngine === "mixed") {
+      const tts = await loadKokoro(MIXED_KOKORO_DTYPE, createProgressPoster(runId));
+      if (!state.ready) {
+        state.voices = kokoroVoices(tts);
+        const allPiper = await loadPiperVoices(createProgressPoster(runId));
+        state.zhVoices = allPiper.filter((v) => v.language?.toLowerCase().startsWith("zh"));
+        state.ready = true;
+      }
+      ui.populateVoiceDropdown(state.voices);
+      ui.populateVoiceDropdown(state.zhVoices ?? [], ui.zhVoiceSelect);
+      if ((state.zhVoices ?? []).length === 0) {
+        ui.showError({
+          title: "No Mandarin voice is available",
+          hint: "The Piper voice list returned no zh voice. Switch to English, or clear the voice cache under Advanced.",
+        });
+      }
     }
-    showProgress("Ready. Type text and click Generate.");
-    appendDebugLog(`[engine-switch] selected ${id}`);
+
+    ui.setEngineIdentity(meta.label.replace(" · Recommended", ""), "Ready to generate on this device.");
+    ui.renderPhase({ kind: "engine-ready" });
+    ui.appendDebugLog(`[engine-switch] selected ${currentEngine} (lang=${currentLanguage})`);
   } catch (e) {
-    showError(`Engine load failed: ${e instanceof Error ? e.message : "Unknown error"}`);
-    appendDebugLog(`[engine-switch] failed ${id} => ${e instanceof Error ? e.message : String(e)}`);
+    ui.showError(ui.toUserError(e, "load"));
+    ui.renderPhase({ kind: "engine-failed" });
+    ui.appendDebugLog(
+      `[engine-switch] failed ${currentEngine} => ${e instanceof Error ? e.message : String(e)}`,
+    );
   } finally {
-    setBusy(false);
-    showBar(null);
+    ui.setControlsBusy(false);
+    void refreshAdvancedPanel();
   }
 }
 
-// Generate.
-// ~20k chars covers ~3000 English words (avg ~6 chars/word incl. space) with
-// headroom. Both engines chunk internally (segmentText → per-chunk synth →
-// concat), so length is bounded by patience/RAM, not a single-call truncation.
-const MAX_TEXT_LENGTH = 20000;
+// ── Generate ──────────────────────────────────────────────────────────
 const CHUNK_SIZE = 480;
 
 async function onGenerate(): Promise<void> {
-  const prevRunId = generationRunId;
-  if (prevRunId > 0) {
-    cancelWorkerRun(prevRunId);
+  // Retry from a failed engine load re-runs the load instead of generating.
+  if (ui.getPhase().kind === "engine-failed") {
+    await onEngineSwitch();
+    return;
   }
+  if (generationRunId > 0) cancelWorkerRun(generationRunId);
 
-  clearError();
+  ui.clearError();
   const runId = ++generationRunId;
   activeRunId = runId;
-  setBusy(true);
-  setGeneratingState(true);
-  setDebugStatus("");
-  clearDebugLog();
+  ui.setControlsBusy(true);
+  ui.setDebugStatus("");
+  ui.clearDebugLog();
   clearCurrentWav();
-  showProgress("Cleared previous output. Regenerating...");
-  showBar(0);
 
   const generationStart = performance.now();
-  const generationEngine = currentEngine;
+  const engine = currentEngine;
   let totalChunkEstimate = 0;
 
   const onChunk = (stats: ChunkStats): void => {
     if (runId !== generationRunId) return;
-    const chunkCount = stats.chunkIndex;
     totalChunkEstimate = stats.totalChunks;
-    logChunkStats(generationEngine, stats);
+    logChunkStats(engine, stats);
     const elapsed = performance.now() - generationStart;
-    const avg = elapsed / Math.max(1, chunkCount);
-    const eta = avg * Math.max(0, totalChunkEstimate - chunkCount);
-    const pct = Math.max(0, Math.min(100, Math.round((chunkCount / totalChunkEstimate) * 100)));
-    const etaText = eta > 0 ? ` ETA ${formatEta(eta)}` : "";
-    showProgress(
-      `[${generationEngine}] generating ${chunkCount}/${totalChunkEstimate} chunks (${pct}%).${etaText}`,
-    );
-    showBar(pct);
+    const avg = elapsed / Math.max(1, stats.chunkIndex);
+    const etaMs = avg * Math.max(0, totalChunkEstimate - stats.chunkIndex);
+    const pct = Math.max(0, Math.min(100, (stats.chunkIndex / totalChunkEstimate) * 100));
+    ui.renderPhase({
+      kind: "generating",
+      step: `Generating sentence ${stats.chunkIndex} of ${totalChunkEstimate}`,
+      pct,
+      etaMs,
+    });
   };
 
   try {
-    const text = validateText(textInput.value, { maxLength: MAX_TEXT_LENGTH });
-    const id = currentEngine;
-    appendDebugLog(`[${id}] generate start len=${text.length}`);
+    const text = validateText(ui.textInput.value, { maxLength: ui.MAX_TEXT_LENGTH });
+    ui.renderPhase({ kind: "generating", step: "Preparing text", pct: null });
+    ui.appendDebugLog(`[${engine}] generate start len=${text.length}`);
     totalChunkEstimate = Math.max(1, Math.ceil(text.length / CHUNK_SIZE));
 
-    const wavBuffer = await startWorkerGenerate(runId, id, text, voiceSelect.value || "", onChunk);
-
+    const wavBuffer = await startWorkerGenerate(
+      runId,
+      engine,
+      text,
+      ui.voiceSelect.value || "",
+      onChunk,
+      engine === "mixed" ? ui.zhVoiceSelect.value || "" : undefined,
+    );
     if (runId !== generationRunId) return;
-    appendDebugLog(`generate done. wavBytes=${wavBuffer.byteLength}`);
 
-    const outputBlob = new Blob([wavBuffer], { type: "audio/wav" });
-    const url = URL.createObjectURL(outputBlob);
-    if (audioPlayer.src) URL.revokeObjectURL(audioPlayer.src);
-    audioPlayer.src = url;
-    playerRow.style.display = "block";
-    currentWav = outputBlob;
-    downloadRow.classList.add("visible");
-    showBar(100);
-    setDebugStatus("Done. Download ready.");
-    showProgress(`Done (${Math.round((performance.now() - generationStart) / 1000)}s).`);
+    const elapsedMs = performance.now() - generationStart;
+    const durationSec = wavDurationSec(wavBuffer);
+    ui.appendDebugLog(`generate done. wavBytes=${wavBuffer.byteLength} duration=${durationSec.toFixed(2)}s`);
+
+    const blob = new Blob([wavBuffer], { type: "audio/wav" });
+    currentWav = blob;
+    if (ui.audioPlayer.src) URL.revokeObjectURL(ui.audioPlayer.src);
+    ui.showResult(URL.createObjectURL(blob), {
+      voice: voiceLabelFor(ui.voiceSelect),
+      language: languageLabel(),
+      durationSec,
+      elapsedMs,
+    });
+    ui.renderPhase({ kind: "done", elapsedMs });
+    ui.setDebugStatus("Done. Download ready.");
 
     // Persist to IndexedDB history (fire-and-forget; full text saved).
     saveHistoryEntry({
       text,
-      engine: id,
-      voice: voiceSelect.value || "",
-      wavBlob: outputBlob,
+      engine,
+      voice:
+        engine === "mixed"
+          ? `${ui.voiceSelect.value}+${ui.zhVoiceSelect.value}`
+          : ui.voiceSelect.value || "",
+      wavBlob: blob,
       byteLength: wavBuffer.byteLength,
+      durationSec,
       createdAt: Date.now(),
-    }).then(() => refreshHistoryPanel()).catch(() => {});
+    })
+      .then(() => refreshHistoryPanel())
+      .catch(() => {});
   } catch (e) {
     if (runId !== generationRunId) return;
     if (e instanceof Error && e.message === CANCELLED_ERROR) {
-      setDebugStatus("Generation cancelled.");
-      showProgress("Generation cancelled.");
+      ui.setDebugStatus("Generation cancelled.");
+      ui.renderPhase({ kind: "cancelled" });
       return;
     }
-    setDebugStatus("Generation failed. See log.");
-    if (e instanceof TtsError) {
-      showError(e.message);
-    } else {
-      showError(`Generation failed: ${e instanceof Error ? e.message : "Unknown error."}`);
-    }
-    appendDebugLog(
-      `[${currentEngine}] generate failed => ${e instanceof Error ? e.message : "Unknown error"}`,
+    ui.setDebugStatus("Generation failed. See log.");
+    ui.showError(
+      e instanceof TtsError
+        ? { title: e.message, hint: "Adjust the text and try again." }
+        : ui.toUserError(e, "generate"),
     );
-    showProgress("");
+    ui.renderPhase({ kind: "engine-ready" });
+    ui.appendDebugLog(
+      `[${engine}] generate failed => ${e instanceof Error ? e.message : "Unknown error"}`,
+    );
   } finally {
-    if (runId !== generationRunId) return;
-    setBusy(false);
-    setGeneratingState(false);
-    if (activeRunId === runId) {
-      activeRunId = 0;
+    if (runId === generationRunId) {
+      ui.setControlsBusy(false);
+      if (activeRunId === runId) activeRunId = 0;
     }
-    showBar(null);
   }
 }
 
-// Download
+function onCancelGenerate(): void {
+  if (activeRunId) cancelWorkerRun(activeRunId);
+}
+
+function clearCurrentWav(): void {
+  if (!ui.audioPlayer.paused) ui.audioPlayer.pause();
+  if (ui.audioPlayer.src) {
+    URL.revokeObjectURL(ui.audioPlayer.src);
+    ui.audioPlayer.removeAttribute("src");
+    ui.audioPlayer.load();
+  }
+  ui.clearResult();
+  currentWav = null;
+}
+
+// ── Voice preview ─────────────────────────────────────────────────────
+const PREVIEW_TEXT: Record<"en" | "zh", string> = {
+  en: "Hello, this is how I sound.",
+  zh: "你好，这是我的声音。",
+};
+const previewAudio = new Audio();
+let previewRunning = false;
+/** Run id of an in-flight preview, so its progress bypasses the phase machine. */
+let previewRunId: number | null = null;
+
+async function onPreviewVoice(): Promise<void> {
+  if (previewRunning) return;
+  const phase = ui.getPhase().kind;
+  if (phase !== "engine-ready" && phase !== "done" && phase !== "cancelled") return;
+
+  previewRunning = true;
+  ui.setPreviewBusy(true);
+  const runId = ++generationRunId;
+  previewRunId = runId;
+  try {
+    const text = currentLanguage === "zh" ? PREVIEW_TEXT.zh : PREVIEW_TEXT.en;
+    const buffer = await startWorkerGenerate(
+      runId,
+      currentEngine,
+      text,
+      ui.voiceSelect.value || "",
+      () => {},
+      currentEngine === "mixed" ? ui.zhVoiceSelect.value || "" : undefined,
+    );
+    if (previewAudio.src) URL.revokeObjectURL(previewAudio.src);
+    previewAudio.src = URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
+    await previewAudio.play().catch(() => {});
+  } catch (e) {
+    ui.showError(ui.toUserError(e, "generate"));
+  } finally {
+    // Leave the phase exactly as it was — a preview must not overwrite a
+    // result the user already generated.
+    previewRunId = null;
+    previewRunning = false;
+    ui.setPreviewBusy(false);
+  }
+}
+
+// ── Download ──────────────────────────────────────────────────────────
 function triggerDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -495,74 +635,101 @@ function triggerDownload(blob: Blob, filename: string): void {
 }
 
 function onDownload(): void {
-  if (!currentWav) return;
-  triggerDownload(currentWav, "tts-output.wav");
+  if (currentWav) triggerDownload(currentWav, "tts-output.wav");
 }
 
-// -- History panel ----------------------------------------------------------
-const historyList = document.getElementById("history-list") as HTMLElement;
-const historyClearBtn = document.getElementById("history-clear-btn") as HTMLButtonElement;
-const historyEmpty = document.getElementById("history-empty") as HTMLElement;
-
-/** Active object URLs for history playback -- revoked on delete / clear. */
+// ── History ───────────────────────────────────────────────────────────
+/** Active object URLs for history playback — revoked on delete / clear. */
 const historyUrls = new Map<number, string>();
 
-/** Escape unsafe HTML characters so user text is safe to embed via innerHTML. */
-function escHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+function iconSvg(name: string, cls = "icon icon-sm"): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", cls);
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#${name}`);
+  svg.appendChild(use);
+  return svg;
 }
 
+function iconButton(icon: string, label: string, danger = false): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = danger ? "icon-btn is-danger" : "icon-btn";
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+  btn.appendChild(iconSvg(icon));
+  return btn;
+}
+
+/** Built with DOM APIs, not innerHTML — user text can never become markup. */
 function renderHistoryEntry(entry: HistoryEntry): HTMLElement {
   const id = entry.id!;
   const item = document.createElement("div");
   item.className = "history-item";
+  item.setAttribute("role", "listitem");
   item.dataset.id = String(id);
 
-  const snippet = entry.text.slice(0, 80).replace(/\s+/g, " ").trim();
-  const label = snippet.length < entry.text.length ? `${escHtml(snippet)}…` : escHtml(snippet);
+  const play = iconButton("i-play", "Play this generation");
+  play.classList.add("is-round");
 
-  item.innerHTML = `
-    <div class="history-meta">
-      <span class="history-time">${escHtml(relativeTime(entry.createdAt))}</span>
-      <span class="history-engine">${escHtml(entry.engine)}</span>
-      <span class="history-size">${escHtml(formatBytes(entry.byteLength))}</span>
-    </div>
-    <div class="history-text" title="${escHtml(entry.text)}">${label}</div>
-    <div class="history-actions">
-      <button class="history-play-btn" aria-label="Play">&#9654; Play</button>
-      <button class="history-dl-btn" aria-label="Download">&#8595; Save</button>
-      <button class="history-del-btn" aria-label="Delete">&#10005;</button>
-    </div>`;
+  const text = document.createElement("div");
+  text.className = "history-text";
+  text.textContent = summarizeText(entry.text, 120);
+  text.title = entry.text;
 
-  item.querySelector(".history-play-btn")!.addEventListener("click", () => {
+  const facts = document.createElement("div");
+  facts.className = "history-facts";
+  const parts = [
+    entry.voice || entry.engine,
+    entry.durationSec ? ui.formatSeconds(entry.durationSec) : formatBytes(entry.byteLength),
+    relativeTime(entry.createdAt),
+  ];
+  for (const p of parts) {
+    const span = document.createElement("span");
+    span.className = "num";
+    span.textContent = p;
+    facts.appendChild(span);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "history-actions";
+  const dl = iconButton("i-download", "Download this generation");
+  const del = iconButton("i-trash", "Delete this generation", true);
+  actions.append(dl, del);
+
+  item.append(play, text, facts, actions);
+
+  play.addEventListener("click", () => {
     let url = historyUrls.get(id);
     if (!url) {
       url = URL.createObjectURL(entry.wavBlob);
       historyUrls.set(id, url);
     }
-    if (audioPlayer.src) URL.revokeObjectURL(audioPlayer.src);
-    audioPlayer.src = url;
-    playerRow.style.display = "block";
-    audioPlayer.play().catch(() => {});
+    if (ui.audioPlayer.src) URL.revokeObjectURL(ui.audioPlayer.src);
+    ui.showResult(url, {
+      voice: entry.voice || entry.engine,
+      language: entry.engine === "mixed" ? "English + 中文" : "—",
+      durationSec: entry.durationSec ?? 0,
+      elapsedMs: 0,
+    });
+    void ui.audioPlayer.play().catch(() => {});
   });
 
-  item.querySelector(".history-dl-btn")!.addEventListener("click", () => {
+  dl.addEventListener("click", () => {
     const ts = new Date(entry.createdAt).toISOString().replace(/[:.]/g, "-").slice(0, 19);
     triggerDownload(entry.wavBlob, `tts-${ts}.wav`);
   });
 
-  item.querySelector(".history-del-btn")!.addEventListener("click", async () => {
+  del.addEventListener("click", async () => {
     const url = historyUrls.get(id);
-    if (url) { URL.revokeObjectURL(url); historyUrls.delete(id); }
+    if (url) {
+      URL.revokeObjectURL(url);
+      historyUrls.delete(id);
+    }
     await deleteHistoryEntry(id);
-    item.remove();
-    const remaining = historyList.querySelectorAll(".history-item").length;
-    if (remaining === 0) historyEmpty.style.display = "block";
+    await refreshHistoryPanel();
   });
 
   return item;
@@ -571,53 +738,105 @@ function renderHistoryEntry(entry: HistoryEntry): HTMLElement {
 async function refreshHistoryPanel(): Promise<void> {
   const [entries, usedBytes] = await Promise.all([listHistory(), totalStorageBytes()]);
 
-  // Update storage-used label.
-  const storageEl = document.getElementById("history-storage-used");
-  if (storageEl) {
-    const limitMB = MAX_DB_BYTES / (1024 * 1024);
-    storageEl.textContent = `${formatBytes(usedBytes)} / ${limitMB} MB`;
-  }
+  const limitMB = MAX_DB_BYTES / (1024 * 1024);
+  ui.historyStorageUsed.textContent = entries.length
+    ? `${formatBytes(usedBytes)} of ${limitMB} MB used`
+    : "";
 
-  historyList.innerHTML = "";
   historyUrls.forEach((url) => URL.revokeObjectURL(url));
   historyUrls.clear();
-  if (entries.length === 0) {
-    historyEmpty.style.display = "block";
-    return;
-  }
-  historyEmpty.style.display = "none";
-  for (const entry of entries) {
-    historyList.appendChild(renderHistoryEntry(entry));
-  }
+  ui.historyList.innerHTML = "";
+
+  const hasEntries = entries.length > 0;
+  ui.historyEmpty.hidden = hasEntries;
+  // No "Clear All" when there is nothing to clear.
+  ui.historyClearBtn.hidden = !hasEntries;
+  for (const entry of entries) ui.historyList.appendChild(renderHistoryEntry(entry));
+
+  ui.cacheHistory.textContent = formatBytes(usedBytes);
 }
 
 async function onHistoryClear(): Promise<void> {
   historyUrls.forEach((url) => URL.revokeObjectURL(url));
   historyUrls.clear();
   await clearHistory();
-  historyList.innerHTML = "";
-  historyEmpty.style.display = "block";
+  await refreshHistoryPanel();
 }
 
-async function onCopyDebugLog(): Promise<void> {
+// ── Advanced panel ────────────────────────────────────────────────────
+async function refreshAdvancedPanel(): Promise<void> {
+  const meta = ENGINE_META[currentEngine];
+  ui.perfEngine.textContent = meta.label.replace(" · Recommended", "");
+  ui.perfRate.textContent = `${(meta.sampleRate / 1000).toFixed(2).replace(/\.?0+$/, "")} kHz`;
+  ui.perfThreads.textContent = String(navigator.hardwareConcurrency || "unknown");
+  ui.perfCoi.textContent = self.crossOriginIsolated ? "Yes" : "No";
+
+  let device = "WASM";
+  if (currentEngine.startsWith("kokoro-")) {
+    device = (await safeDevice(currentEngine.replace("kokoro-", "") as KokoroDtype)).toUpperCase();
+  }
+  ui.perfDevice.textContent = device;
+  ui.perfMeta.textContent = device;
+
   try {
-    await copyDebugLog();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "Unknown error";
-    showError(`Failed to copy debug log: ${msg}`);
-    setDebugStatus("Copy failed.");
+    const est = await navigator.storage?.estimate?.();
+    if (est?.usage != null) {
+      ui.cacheUsed.textContent = formatBytes(est.usage);
+      ui.cacheMeta.textContent = formatBytes(est.usage);
+    } else {
+      ui.cacheUsed.textContent = "unavailable";
+    }
+  } catch {
+    ui.cacheUsed.textContent = "unavailable";
   }
 }
 
 async function onResetPiperCache(): Promise<void> {
   try {
     await resetPiperCache(createProgressPoster(generationRunId));
+    await refreshAdvancedPanel();
   } catch {
-    // keep no-op: reset errors are already surfaced by resetPiperCache.
+    // resetPiperCache already surfaces its own failures.
   }
 }
 
-// Service worker: COOP/COEP (cross-origin isolation) + app-shell cache
+async function onCopyDebugLog(): Promise<void> {
+  try {
+    await ui.copyDebugLog();
+  } catch (e) {
+    ui.setDebugStatus(`Copy failed: ${e instanceof Error ? e.message : "unknown error"}`);
+  }
+}
+
+// ── Input assistance ──────────────────────────────────────────────────
+function setText(value: string): void {
+  ui.textInput.value = value;
+  ui.updateCharCount();
+  ui.textInput.focus();
+}
+
+const isMac = /Mac|iPhone|iPad/.test(navigator.userAgent);
+
+function applyShortcutLabels(): void {
+  const label = isMac ? "⌘ Enter" : "Ctrl Enter";
+  ui.kbdGenerate.textContent = label;
+  const btnKbd = ui.generateBtn.querySelector(".kbd");
+  if (btnKbd) btnKbd.textContent = label;
+}
+
+function onKeydown(e: KeyboardEvent): void {
+  if ((isMac ? e.metaKey : e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    if (!ui.generateBtn.disabled) void onGenerate();
+    return;
+  }
+  if (e.key === "Escape" && !ui.cancelBtn.hidden) {
+    e.preventDefault();
+    onCancelGenerate();
+  }
+}
+
+// ── Service worker: COOP/COEP isolation + app-shell cache ─────────────
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker
     .register("sw.js")
@@ -629,49 +848,80 @@ if ("serviceWorker" in navigator) {
     .catch(() => {});
 }
 
-// Init
+// ── Init ──────────────────────────────────────────────────────────────
 async function init(): Promise<void> {
+  ui.initTheme();
+  applyShortcutLabels();
+  ui.updateCharCount();
+  ui.clearResult();
+  ui.renderPhase({ kind: "boot" });
+
   if (sessionStorage.getItem(PIPER_RESET_FLAG)) {
     sessionStorage.removeItem(PIPER_RESET_FLAG);
     try {
       await getPiper().flush();
-      showProgress("Piper cache cleared.");
+      ui.setDebugStatus("Piper cache cleared.");
     } catch {
       // already released or empty
     }
   }
 
-  engineSelect.innerHTML = "";
-  for (const [, state] of engines) {
-    const opt = document.createElement("option");
-    opt.value = state.id;
-    opt.textContent = state.label;
-    engineSelect.appendChild(opt);
-  }
-  engineSelect.value = "kokoro-q4";
-  resetPiperBtn.style.display = "none";
+  populateLanguageDropdown();
+  populateEngineDropdown();
 
   try {
     await onEngineSwitch();
   } catch (e) {
-    showError(`Startup failed: ${e instanceof Error ? e.message : "Unknown error"}`);
-    generateBtn.disabled = true;
+    ui.showError(ui.toUserError(e, "load"));
+    ui.renderPhase({ kind: "engine-failed" });
   }
 
-  // Load persisted history into the panel (non-blocking).
   void refreshHistoryPanel();
+  void refreshAdvancedPanel();
 }
 
-engineSelect.addEventListener("change", onEngineSwitch);
-generateBtn.addEventListener("click", onGenerate);
-cancelBtn.addEventListener("click", onCancelGenerate);
-downloadBtn.addEventListener("click", onDownload);
-resetPiperBtn.addEventListener("click", onResetPiperCache);
-copyDebugLogBtn.addEventListener("click", onCopyDebugLog);
-clearDebugLogBtn.addEventListener("click", () => {
-  clearDebugLog();
-  setDebugStatus("Debug log cleared.");
+// ── Listeners ─────────────────────────────────────────────────────────
+ui.languageSelect.addEventListener("change", () => {
+  void onLanguageChange();
 });
-historyClearBtn.addEventListener("click", onHistoryClear);
+ui.engineSelect.addEventListener("change", () => {
+  void onEngineSwitch();
+});
+ui.generateBtn.addEventListener("click", () => {
+  void onGenerate();
+});
+ui.cancelBtn.addEventListener("click", onCancelGenerate);
+ui.regenerateBtn.addEventListener("click", () => {
+  void onGenerate();
+});
+ui.previewBtn.addEventListener("click", () => void onPreviewVoice());
+ui.downloadBtn.addEventListener("click", onDownload);
 
-init();
+ui.textInput.addEventListener("input", ui.updateCharCount);
+ui.sampleEnBtn.addEventListener("click", () => setText(SAMPLES.en));
+ui.sampleZhBtn.addEventListener("click", () => setText(SAMPLES.zh));
+ui.clearTextBtn.addEventListener("click", () => setText(""));
+
+ui.historyClearBtn.addEventListener("click", () => void onHistoryClear());
+ui.resetPiperBtn.addEventListener("click", () => void onResetPiperCache());
+ui.copyDebugLogBtn.addEventListener("click", () => void onCopyDebugLog());
+ui.clearDebugLogBtn.addEventListener("click", () => {
+  ui.clearDebugLog();
+  ui.setDebugStatus("Debug log cleared.");
+});
+ui.errorDetailsBtn.addEventListener("click", () => {
+  ui.appendDebugLog(`[error-details] ${ui.getLastTechnical()}`);
+  ui.revealDebugLog();
+});
+
+ui.themeLightBtn.addEventListener("click", () => ui.applyTheme("light"));
+ui.themeDarkBtn.addEventListener("click", () => ui.applyTheme("dark"));
+ui.settingsBtn.addEventListener("click", () => {
+  ui.advPerformance.open = true;
+  ui.advCache.open = true;
+  ui.advancedPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+document.addEventListener("keydown", onKeydown);
+
+void init();
