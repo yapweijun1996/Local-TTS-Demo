@@ -44,3 +44,8 @@ test-results/
 !**/__fixtures__/
 !**/__fixtures__/**
 .gstack/
+
+# Python sidecar
+__pycache__/
+*.pyc
+.venv/

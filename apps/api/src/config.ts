@@ -36,6 +36,10 @@ export interface AppConfig {
   logText: boolean;
   port: number;
   host: string;
+  /** Qwen3-TTS sidecar base URL; empty string = sidecar engine disabled. */
+  sidecarUrl: string;
+  /** Per-request sidecar timeout (generation on CPU can take minutes). */
+  sidecarTimeoutMs: number;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -50,6 +54,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     logText:      overrides.logText      ?? envBool("TTS_LOG_TEXT",      false),
     port:         overrides.port         ?? envInt("PORT",                3000, 1),
     host:         overrides.host         ?? envStr("HOST",               "0.0.0.0"),
+    sidecarUrl:   overrides.sidecarUrl   ?? envStr("TTS_SIDECAR_URL",    ""),
+    sidecarTimeoutMs: overrides.sidecarTimeoutMs ?? envInt("TTS_SIDECAR_TIMEOUT_MS", 120000, 1000),
   };
 }
 
