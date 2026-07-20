@@ -154,9 +154,25 @@ All licenses verified commercial-friendly (2026-06-09):
 | 7 | **Orpheus TTS** ⭐ | Apache-2.0 | ★★★★★ | Llama-3B, empathetic; inline emotion tags (`<laugh>`, `<sigh>`). Real-time streaming |
 | 8 | **Higgs Audio V2** | Apache-2.0 | ★★★★ | Multi-speaker, expressive |
 | 9 | **Dia 1.6B** | Apache-2.0 | ★★★★ | Dialogue / multi-turn scripts |
+| 10 | **Qwen3-TTS** ⭐ | Apache-2.0 | ★★★★★ | Native zh/en code-switch in one model; 10 languages; ~97 ms streaming; voice cloning |
 
 **Recommended order:** Chatterbox (most stable quality) → Orpheus (emotive).
 Both reuse one sidecar contract; adding the second engine is config + adapter, not new infra.
+
+#### 10. Qwen3-TTS (Alibaba Qwen, open-sourced 2026-01)
+
+- 0.6B–1.7B parameters; weights + inference code Apache-2.0
+  ([repo](https://github.com/QwenLM/Qwen3-TTS), [LICENSE](https://github.com/QwenLM/Qwen3-TTS/blob/main/LICENSE), verified 2026-07-20)
+- 10 languages: zh, en, ja, ko, de, fr, ru, pt, es, it — **handles mixed
+  Mandarin/English natively in one model**, no per-script routing/stitching needed
+- Streaming generation (~97 ms first-audio), free-form voice design, voice cloning
+- Serving: HuggingFace transformers + vLLM. **No ONNX export** — LM-based
+  autoregressive + codec decoder, so not Tier 1 viable (see table below)
+- VRAM: ~3.4 GB for 1.7B fp16 — runs on entry-level GPUs
+- Positioning: server-side premium tier for mixed zh/en synthesis. The browser
+  `mixed` engine (Kokoro EN + Piper ZH stitching) stays as the free/offline path;
+  Qwen3-TTS is the paid/high-quality path for the same input
+- ⚠️ Voice cloning needs abuse safeguards + ToS coverage before any hosted deployment
 
 ---
 
@@ -182,6 +198,7 @@ Both reuse one sidecar contract; adding the second engine is config + adapter, n
 |-------|--------|
 | Parler-TTS Mini (880M) | No ONNX conversion; ~3.5 GB fp32 |
 | Orpheus-TTS | Llama-3B; no ONNX; GPU-only server |
+| Qwen3-TTS (0.6B–1.7B) | No ONNX export; autoregressive LM + codec decoder — 7–20× Kokoro size, WASM-hostile. Tier 2 only |
 | SpeechT5 | Outclassed by Kokoro on all dimensions; deprecated for this project |
 
 > Monitor Parler-TTS and Orpheus compact variants (150M, 400M) — ONNX conversions
