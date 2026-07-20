@@ -38,15 +38,15 @@ MAX_TEXT_LENGTH = int(os.environ.get("QWEN_TTS_MAX_TEXT_LENGTH", "3000"))
 # /voices fallback while the model is still loading; once loaded the live
 # model.get_supported_speakers() list takes precedence.
 BUILTIN_SPEAKERS = [
-    {"id": "Vivian", "name": "Vivian (bright young female)", "language": "zh"},
-    {"id": "Serena", "name": "Serena (warm gentle female)", "language": "zh"},
-    {"id": "Uncle_Fu", "name": "Uncle Fu (low mellow male)", "language": "zh"},
-    {"id": "Dylan", "name": "Dylan (Beijing dialect male)", "language": "zh"},
-    {"id": "Eric", "name": "Eric (Sichuan dialect male)", "language": "zh"},
-    {"id": "Ryan", "name": "Ryan (rhythmic male)", "language": "en"},
-    {"id": "Aiden", "name": "Aiden (sunny American male)", "language": "en"},
-    {"id": "Ono_Anna", "name": "Ono Anna (playful female)", "language": "ja"},
-    {"id": "Sohee", "name": "Sohee (warm female)", "language": "ko"},
+    {"id": "vivian", "name": "Vivian (bright young female)", "language": "zh"},
+    {"id": "serena", "name": "Serena (warm gentle female)", "language": "zh"},
+    {"id": "uncle_fu", "name": "Uncle Fu (low mellow male)", "language": "zh"},
+    {"id": "dylan", "name": "Dylan (Beijing dialect male)", "language": "zh"},
+    {"id": "eric", "name": "Eric (Sichuan dialect male)", "language": "zh"},
+    {"id": "ryan", "name": "Ryan (rhythmic male)", "language": "en"},
+    {"id": "aiden", "name": "Aiden (sunny American male)", "language": "en"},
+    {"id": "ono_anna", "name": "Ono Anna (playful female)", "language": "ja"},
+    {"id": "sohee", "name": "Sohee (warm female)", "language": "ko"},
 ]
 
 # TtsInput.language codes -> Qwen language names. Unknown values pass through
@@ -139,11 +139,13 @@ def voices() -> dict[str, Any]:
     model = _state["model"]
     if model is not None:
         try:
+            # Live speaker ids are lowercase (qwen-tts 0.1.1); enrich them with
+            # the static table's names/languages via case-insensitive lookup.
             supported = model.get_supported_speakers()
-            known = {s["id"]: s for s in BUILTIN_SPEAKERS}
+            known = {s["id"].lower(): s for s in BUILTIN_SPEAKERS}
             return {
                 "voices": [
-                    known.get(spk, {"id": spk, "name": spk, "language": "auto"})
+                    {**known.get(spk.lower(), {"name": spk, "language": "auto"}), "id": spk}
                     for spk in supported
                 ]
             }

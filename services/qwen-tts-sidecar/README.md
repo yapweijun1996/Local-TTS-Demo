@@ -26,7 +26,7 @@ Synthesize (native zh/en code-switch in one call — no segment routing needed):
 ```bash
 curl -X POST http://localhost:8100/synthesize \
   -H 'content-type: application/json' \
-  -d '{"text": "今天我们 review 一下 quarterly report。", "voice": "Vivian"}' \
+  -d '{"text": "今天我们 review 一下 quarterly report。", "voice": "vivian"}' \
   -o out.wav
 ```
 
@@ -36,7 +36,7 @@ curl -X POST http://localhost:8100/synthesize \
 TTS_SIDECAR_URL=http://localhost:8100 pnpm --filter @local-tts/api dev
 curl -X POST http://localhost:3000/api/tts \
   -H 'content-type: application/json' \
-  -d '{"engine": "qwen3-tts", "text": "Hello 你好", "voice": "Serena"}' -o out.wav
+  -d '{"engine": "qwen3-tts", "text": "Hello 你好", "voice": "serena"}' -o out.wav
 ```
 
 ## Env vars
