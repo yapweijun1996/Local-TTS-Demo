@@ -4,6 +4,7 @@ import {
   decodeWav,
   wavDurationMs,
   concatFloat32,
+  resampleLinear,
   WAV_HEADER_BYTES,
 } from "../src/audioUtils.js";
 
@@ -124,5 +125,45 @@ describe("concatFloat32", () => {
   });
   it("returns empty for no chunks", () => {
     expect(concatFloat32([]).length).toBe(0);
+  });
+});
+
+describe("resampleLinear", () => {
+  it("is a no-op when rates already match", () => {
+    const samples = new Float32Array([0.1, 0.2, 0.3]);
+    expect(resampleLinear(samples, 24000, 24000)).toBe(samples);
+  });
+
+  it("returns empty input unchanged", () => {
+    const empty = new Float32Array(0);
+    expect(resampleLinear(empty, 22050, 24000)).toBe(empty);
+  });
+
+  it("upsamples to a longer buffer proportional to the rate ratio", () => {
+    const samples = new Float32Array(2205).fill(0.5); // 0.1s @ 22050Hz
+    const out = resampleLinear(samples, 22050, 24000);
+    const expectedLength = Math.round(2205 * (24000 / 22050));
+    expect(out.length).toBe(expectedLength);
+  });
+
+  it("downsamples to a shorter buffer proportional to the rate ratio", () => {
+    const samples = new Float32Array(2400).fill(0.5); // 0.1s @ 24000Hz
+    const out = resampleLinear(samples, 24000, 22050);
+    const expectedLength = Math.round(2400 * (22050 / 24000));
+    expect(out.length).toBe(expectedLength);
+  });
+
+  it("preserves a constant signal's amplitude", () => {
+    const samples = new Float32Array(1000).fill(0.75);
+    const out = resampleLinear(samples, 24000, 22050);
+    expect(out.every((v) => Math.abs(v - 0.75) < 1e-9)).toBe(true);
+  });
+
+  it("linearly interpolates between two known points", () => {
+    // 5 samples ramping 0 -> 1 at rate 5; upsample to rate 10 should land ~0.5 offset.
+    const samples = new Float32Array([0, 0.25, 0.5, 0.75, 1]);
+    const out = resampleLinear(samples, 5, 10);
+    expect(out[0]).toBeCloseTo(0, 5);
+    expect(out[out.length - 1]).toBeCloseTo(1, 1);
   });
 });

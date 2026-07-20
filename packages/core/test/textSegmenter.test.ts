@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeText, validateText, segmentText } from "../src/textSegmenter.js";
+import { normalizeText, validateText, segmentText, segmentByLanguage } from "../src/textSegmenter.js";
 import { TtsError } from "../src/types.js";
 
 describe("normalizeText", () => {
@@ -164,5 +164,57 @@ describe("segmentText — abbreviation & decimal safety (Q-1)", () => {
     const flat = chunks.join(" ");
     expect(flat).toBe("This is option A. Next is option B.");
     expect(chunks.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("segmentByLanguage", () => {
+  it("returns [] for empty input", () => {
+    expect(segmentByLanguage("")).toEqual([]);
+    expect(segmentByLanguage("   ")).toEqual([]);
+  });
+
+  it("returns a single 'en' segment for pure English", () => {
+    expect(segmentByLanguage("Hello world")).toEqual([{ lang: "en", text: "Hello world" }]);
+  });
+
+  it("returns a single 'zh' segment for pure Mandarin", () => {
+    expect(segmentByLanguage("你好世界")).toEqual([{ lang: "zh", text: "你好世界" }]);
+  });
+
+  it("splits alternating zh/en runs and round-trips to the normalized input", () => {
+    const input = "Hello 你好 world 世界";
+    const segments = segmentByLanguage(input);
+    expect(segments).toEqual([
+      { lang: "en", text: "Hello " },
+      { lang: "zh", text: "你好 " },
+      { lang: "en", text: "world " },
+      { lang: "zh", text: "世界" },
+    ]);
+    expect(segments.map((s) => s.text).join("")).toBe(normalizeText(input));
+  });
+
+  it("attaches shared punctuation to the preceding run instead of splitting on it", () => {
+    const segments = segmentByLanguage("Hello, 世界!");
+    expect(segments).toEqual([
+      { lang: "en", text: "Hello, " },
+      { lang: "zh", text: "世界!" },
+    ]);
+  });
+
+  it("attaches digits to whichever run is active", () => {
+    const segments = segmentByLanguage("temperature 25度");
+    expect(segments).toEqual([
+      { lang: "en", text: "temperature 25" },
+      { lang: "zh", text: "度" },
+    ]);
+  });
+
+  it("defaults digit/punctuation-only text to 'en'", () => {
+    expect(segmentByLanguage("123 456!")).toEqual([{ lang: "en", text: "123 456!" }]);
+  });
+
+  it("handles Mandarin punctuation (，。！？) as part of the zh run", () => {
+    const segments = segmentByLanguage("你好，世界！这是测试。");
+    expect(segments).toEqual([{ lang: "zh", text: "你好，世界！这是测试。" }]);
   });
 });

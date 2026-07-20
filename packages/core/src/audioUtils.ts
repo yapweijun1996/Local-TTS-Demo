@@ -151,6 +151,33 @@ export function wavDurationMs(numSamples: number, sampleRate: number): number {
   return (numSamples / sampleRate) * 1000;
 }
 
+/**
+ * Resample float32 PCM to a different sample rate via linear interpolation.
+ *
+ * Needed when concatenating chunks from engines with different native rates
+ * (e.g. Kokoro 24 kHz + Piper 22.05 kHz for mixed-language synthesis) — a WAV
+ * has exactly one sample rate for its whole data chunk, so every source
+ * segment must be brought to a common rate before {@link concatFloat32}.
+ * Linear interpolation is not broadcast-quality resampling, but it is cheap,
+ * dependency-free, and sufficient for short TTS segments. No-op if the rates
+ * already match.
+ */
+export function resampleLinear(samples: Float32Array, fromRate: number, toRate: number): Float32Array {
+  if (fromRate === toRate || samples.length === 0) return samples;
+  const ratio = toRate / fromRate;
+  const newLength = Math.max(1, Math.round(samples.length * ratio));
+  const out = new Float32Array(newLength);
+  const lastIndex = samples.length - 1;
+  for (let i = 0; i < newLength; i++) {
+    const srcPos = i / ratio;
+    const idx0 = Math.min(lastIndex, Math.floor(srcPos));
+    const idx1 = Math.min(lastIndex, idx0 + 1);
+    const frac = srcPos - idx0;
+    out[i] = samples[idx0]! * (1 - frac) + samples[idx1]! * frac;
+  }
+  return out;
+}
+
 /** Concatenate float32 chunks (e.g. per-segment PCM) into one buffer. */
 export function concatFloat32(chunks: Float32Array[]): Float32Array {
   const total = chunks.reduce((sum, c) => sum + c.length, 0);
