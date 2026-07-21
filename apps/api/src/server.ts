@@ -13,6 +13,7 @@ import { config } from "./config.js";
 import { registry } from "./engines/registry.js";
 import { createKokoroAdapter, KOKORO_LICENSE } from "./engines/kokoro.js";
 import { createQwenSidecarAdapter, QWEN3_TTS_LICENSE } from "./engines/qwenSidecar.js";
+import { createVoxcpmSidecarAdapter, VOXCPM2_LICENSE } from "./engines/voxcpmSidecar.js";
 
 const server = Fastify({
   logger: config.logText ? { level: "info" } : { level: "warn" },
@@ -29,14 +30,30 @@ registry.register(
   KOKORO_LICENSE,
 );
 
-// Qwen3-TTS sidecar (Tier 2, docs/ENGINES.md #10) — opt-in via TTS_SIDECAR_URL.
-if (config.sidecarUrl) {
+// Qwen3-TTS sidecar (Tier 2, docs/ENGINES.md #10) — opt-in via TTS_QWEN_SIDECAR_URL.
+// Rejected on 2026-07-21 listening tests for zh/en code-switch quality; kept
+// registered (not removed) in case a future model swap on the same sidecar
+// warrants re-testing. See memory: tts_voice_evaluation_findings.md.
+if (config.qwenSidecarUrl) {
   registry.register(
     createQwenSidecarAdapter({
-      baseUrl: config.sidecarUrl,
-      timeoutMs: config.sidecarTimeoutMs,
+      baseUrl: config.qwenSidecarUrl,
+      timeoutMs: config.qwenSidecarTimeoutMs,
     }),
     QWEN3_TTS_LICENSE,
+  );
+}
+
+// VoxCPM2 sidecar (Tier 2) — opt-in via TTS_VOXCPM_SIDECAR_URL.
+// Approved 2026-07-21: accepted zh/en code-switch quality in one call, no
+// per-language routing needed. Default engine for the paid tier.
+if (config.voxcpmSidecarUrl) {
+  registry.register(
+    createVoxcpmSidecarAdapter({
+      baseUrl: config.voxcpmSidecarUrl,
+      timeoutMs: config.voxcpmSidecarTimeoutMs,
+    }),
+    VOXCPM2_LICENSE,
   );
 }
 

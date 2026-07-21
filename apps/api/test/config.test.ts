@@ -28,6 +28,21 @@ describe("loadConfig", () => {
     expect(c.logText).toBe(false);
     expect(c.port).toBe(3000);
     expect(c.host).toBe("0.0.0.0");
+    expect(c.qwenSidecarUrl).toBe("");
+    expect(c.qwenSidecarTimeoutMs).toBe(120000);
+    expect(c.voxcpmSidecarUrl).toBe("");
+    expect(c.voxcpmSidecarTimeoutMs).toBe(180000);
+  });
+
+  it("reads independent sidecar URLs for Qwen and VoxCPM2", () => {
+    process.env.TTS_QWEN_SIDECAR_URL = "http://localhost:8100";
+    process.env.TTS_VOXCPM_SIDECAR_URL = "http://localhost:8200";
+    process.env.TTS_VOXCPM_SIDECAR_TIMEOUT_MS = "60000";
+    const c = loadConfig();
+    expect(c.qwenSidecarUrl).toBe("http://localhost:8100");
+    expect(c.voxcpmSidecarUrl).toBe("http://localhost:8200");
+    expect(c.voxcpmSidecarTimeoutMs).toBe(60000);
+    expect(c.qwenSidecarTimeoutMs).toBe(120000); // untouched, still default
   });
 
   it("reads TTS_* env vars", () => {

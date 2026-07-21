@@ -1,13 +1,18 @@
 /**
- * Qwen3-TTS engine — Node adapter over the Python sidecar HTTP contract.
+ * VoxCPM2 engine — Node adapter over the Python sidecar HTTP contract.
  *
- * The model itself (PyTorch LM + codec decoder, 0.6B–1.7B params) cannot run
- * in-process (docs/ENGINES.md #10), so `synthesize()` POSTs to the sidecar in
- * services/qwen-tts-sidecar. The sidecar mirrors the PRD §15 error envelope,
- * so its error codes map 1:1 onto TtsError.
+ * Approved 2026-07-21 after Qwen3-TTS and CosyVoice 3 were both rejected on
+ * live listening tests for zh/en code-switched content (accent bleed).
+ * VoxCPM2's in-call code-switch quality was accepted directly — no
+ * per-language segment routing needed. See memory:
+ * tts_voice_evaluation_findings.md for the full evaluation trail.
  *
- * Model: Qwen/Qwen3-TTS-12Hz-*-CustomVoice — native zh/en code-switch,
- * 10 languages, streaming-capable. License: Apache-2.0.
+ * The model (2B params, PyTorch) cannot run in-process, so `synthesize()`
+ * POSTs to the sidecar in services/voxcpm-sidecar. The sidecar mirrors the
+ * PRD §15 error envelope, so its error codes map 1:1 onto TtsError.
+ *
+ * Model: openbmb/VoxCPM2. License: Apache-2.0 (code + weights, verified
+ * 2026-07-21 against GitHub LICENSE and the HF model card frontmatter).
  */
 
 import type {
@@ -20,23 +25,25 @@ import type {
 } from "@local-tts/core";
 import { TtsError } from "@local-tts/core";
 
-export const QWEN3_TTS_LICENSE: EngineLicenseMeta = {
-  engine: "qwen3-tts",
-  modelName: "Qwen3-TTS-12Hz-0.6B-CustomVoice",
+export const VOXCPM2_LICENSE: EngineLicenseMeta = {
+  engine: "voxcpm2",
+  modelName: "VoxCPM2",
   license: "Apache-2.0",
   commercialUse: true,
   requiresAttribution: false,
-  sourceUrl: "https://github.com/QwenLM/Qwen3-TTS",
-  verifiedAt: "2026-07-20",
+  sourceUrl: "https://github.com/OpenBMB/VoxCPM",
+  verifiedAt: "2026-07-21",
   notes:
-    "Weights + inference code Apache-2.0. Runs as a Python sidecar (PyTorch, not ONNX). " +
-    "Native Mandarin/English code-switch in one model. Voice cloning excluded from this adapter.",
+    "Weights + code Apache-2.0 (no scale-trigger caveats, unlike Higgs Audio V2 or IndexTTS-2 — " +
+    "both looked Apache-2.0 from search summaries but carry custom RAIL-style licenses on primary-source check). " +
+    "Runs as a Python sidecar (PyTorch, tokenizer-free diffusion architecture, not ONNX). " +
+    "Native zh/en code-switch accepted in listening tests without per-language routing.",
 };
 
-export interface QwenSidecarOptions {
-  /** Sidecar base URL, e.g. http://localhost:8100 (TTS_QWEN_SIDECAR_URL). */
+export interface VoxcpmSidecarOptions {
+  /** Sidecar base URL, e.g. http://localhost:8200 (TTS_VOXCPM_SIDECAR_URL). */
   baseUrl: string;
-  /** Per-request timeout. Generation on CPU can be slow — default 120 s. */
+  /** Per-request timeout. CPU generation can be slow — default 180 s. */
   timeoutMs?: number;
 }
 
@@ -72,9 +79,9 @@ function toTtsError(status: number, body: SidecarErrorBody | null): TtsError {
   return new TtsError(code, message, { httpStatus: status });
 }
 
-export function createQwenSidecarAdapter(opts: QwenSidecarOptions): TtsEngine {
+export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngine {
   const baseUrl = opts.baseUrl.replace(/\/+$/, "");
-  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const timeoutMs = opts.timeoutMs ?? 180_000;
 
   async function request(path: string, init?: RequestInit): Promise<Response> {
     try {
@@ -83,28 +90,27 @@ export function createQwenSidecarAdapter(opts: QwenSidecarOptions): TtsEngine {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
-      // Network failure / timeout — the sidecar never saw the request.
       const reason = e instanceof Error ? e.message : "unknown network error";
-      throw new TtsError("GENERATION_FAILED", `Qwen sidecar unreachable: ${reason}`, {
+      throw new TtsError("GENERATION_FAILED", `VoxCPM2 sidecar unreachable: ${reason}`, {
         baseUrl,
       });
     }
   }
 
   return {
-    id: "qwen3-tts",
-    name: "Qwen3-TTS (sidecar)",
+    id: "voxcpm2",
+    name: "VoxCPM2 (sidecar)",
 
     /**
-     * "Loaded" = sidecar reachable. Model warm-up continues inside the sidecar;
-     * synthesize() surfaces MODEL_LOAD_FAILED (503) until it finishes, which
-     * keeps registry status accurate without blocking boot for a multi-minute
-     * model download.
+     * "Loaded" = sidecar reachable. Model warm-up continues inside the
+     * sidecar; synthesize() surfaces MODEL_LOAD_FAILED (503) until it
+     * finishes, which keeps registry status accurate without blocking boot
+     * for a multi-minute model download.
      */
     async load(): Promise<void> {
       const res = await request("/health");
       if (!res.ok) {
-        throw new Error(`Qwen sidecar /health returned HTTP ${res.status}.`);
+        throw new Error(`VoxCPM2 sidecar /health returned HTTP ${res.status}.`);
       }
     },
 
@@ -118,7 +124,7 @@ export function createQwenSidecarAdapter(opts: QwenSidecarOptions): TtsEngine {
         id: v.id,
         name: v.name,
         language: v.language,
-        engine: "qwen3-tts",
+        engine: "voxcpm2",
       }));
     },
 
@@ -129,7 +135,6 @@ export function createQwenSidecarAdapter(opts: QwenSidecarOptions): TtsEngine {
         body: JSON.stringify({
           text: input.text,
           ...(input.voice ? { voice: input.voice } : {}),
-          ...(input.language ? { language: input.language } : {}),
         }),
       });
       if (!res.ok) {

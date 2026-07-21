@@ -1,0 +1,15 @@
+# CPU image (works everywhere, slow inference — dev/demo only).
+# For GPU serving swap the base for an NVIDIA CUDA image and run with --gpus all.
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY app.py .
+
+# Model weights download at first startup into this cache; mount it to persist.
+ENV HF_HOME=/models
+VOLUME /models
+
+EXPOSE 8200
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8200"]

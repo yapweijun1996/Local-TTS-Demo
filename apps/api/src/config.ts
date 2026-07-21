@@ -36,10 +36,14 @@ export interface AppConfig {
   logText: boolean;
   port: number;
   host: string;
-  /** Qwen3-TTS sidecar base URL; empty string = sidecar engine disabled. */
-  sidecarUrl: string;
-  /** Per-request sidecar timeout (generation on CPU can take minutes). */
-  sidecarTimeoutMs: number;
+  /** Qwen3-TTS sidecar base URL; empty string = engine disabled. */
+  qwenSidecarUrl: string;
+  /** Per-request Qwen sidecar timeout (generation on CPU can take minutes). */
+  qwenSidecarTimeoutMs: number;
+  /** VoxCPM2 sidecar base URL; empty string = engine disabled. */
+  voxcpmSidecarUrl: string;
+  /** Per-request VoxCPM2 sidecar timeout (generation on CPU can take minutes). */
+  voxcpmSidecarTimeoutMs: number;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -54,8 +58,10 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     logText:      overrides.logText      ?? envBool("TTS_LOG_TEXT",      false),
     port:         overrides.port         ?? envInt("PORT",                3000, 1),
     host:         overrides.host         ?? envStr("HOST",               "0.0.0.0"),
-    sidecarUrl:   overrides.sidecarUrl   ?? envStr("TTS_SIDECAR_URL",    ""),
-    sidecarTimeoutMs: overrides.sidecarTimeoutMs ?? envInt("TTS_SIDECAR_TIMEOUT_MS", 120000, 1000),
+    qwenSidecarUrl:   overrides.qwenSidecarUrl   ?? envStr("TTS_QWEN_SIDECAR_URL",    ""),
+    qwenSidecarTimeoutMs: overrides.qwenSidecarTimeoutMs ?? envInt("TTS_QWEN_SIDECAR_TIMEOUT_MS", 120000, 1000),
+    voxcpmSidecarUrl:   overrides.voxcpmSidecarUrl   ?? envStr("TTS_VOXCPM_SIDECAR_URL",    ""),
+    voxcpmSidecarTimeoutMs: overrides.voxcpmSidecarTimeoutMs ?? envInt("TTS_VOXCPM_SIDECAR_TIMEOUT_MS", 180000, 1000),
   };
 }
 
