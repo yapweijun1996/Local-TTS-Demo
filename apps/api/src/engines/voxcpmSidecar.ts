@@ -23,7 +23,7 @@ import type {
   EngineLicenseMeta,
   TtsErrorCode,
 } from "@local-tts/core";
-import { TtsError } from "@local-tts/core";
+import { TtsError, segmentText, decodeWav, concatFloat32, encodeWav } from "@local-tts/core";
 
 export const VOXCPM2_LICENSE: EngineLicenseMeta = {
   engine: "voxcpm2",
@@ -43,8 +43,18 @@ export const VOXCPM2_LICENSE: EngineLicenseMeta = {
 export interface VoxcpmSidecarOptions {
   /** Sidecar base URL, e.g. http://localhost:8200 (TTS_VOXCPM_SIDECAR_URL). */
   baseUrl: string;
-  /** Per-request timeout. CPU generation can be slow — default 180 s. */
+  /** Per-request (per-chunk, once chunked) timeout. CPU/MPS generation can be slow — default 180 s. */
   timeoutMs?: number;
+  /**
+   * Max chars per sidecar call before splitting (0 = never split). VoxCPM2
+   * synthesizes a whole call as one continuous pass — no internal chunking
+   * like Kokoro/Piper — so a long single call both risks the per-request
+   * timeout (confirmed: a 1294-char request took >180s and got aborted) and
+   * has no bounded latency. Default matches the Kokoro/Piper chunk size for
+   * consistency. Splitting is by sentence/length only, never by language —
+   * VoxCPM2's accepted in-call zh/en mixing is untouched per chunk.
+   */
+  chunkSize?: number;
 }
 
 interface SidecarVoice {
@@ -82,6 +92,7 @@ function toTtsError(status: number, body: SidecarErrorBody | null): TtsError {
 export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngine {
   const baseUrl = opts.baseUrl.replace(/\/+$/, "");
   const timeoutMs = opts.timeoutMs ?? 180_000;
+  const chunkSize = opts.chunkSize ?? 480;
 
   async function request(path: string, init?: RequestInit): Promise<Response> {
     try {
@@ -129,26 +140,60 @@ export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngin
     },
 
     async synthesize(input: TtsInput): Promise<TtsOutput> {
-      const res = await request("/synthesize", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          text: input.text,
-          ...(input.voice ? { voice: input.voice } : {}),
-        }),
-      });
-      if (!res.ok) {
-        throw toTtsError(res.status, (await res.json().catch(() => null)) as SidecarErrorBody | null);
+      const chunks =
+        chunkSize > 0 && input.text.length > chunkSize
+          ? segmentText(input.text, chunkSize)
+          : [input.text];
+
+      if (chunks.length <= 1) {
+        return synthesizeOneChunk(input.text, input.voice);
       }
-      const audioBuffer = await res.arrayBuffer();
-      const durationHeader = Number(res.headers.get("x-duration-ms"));
+
+      // Multi-chunk: one sidecar call per chunk (each still speaks mixed
+      // zh/en internally — only the split points are language-agnostic),
+      // decode each WAV back to PCM, and re-encode as one file. Same
+      // decode/concat/encode pattern the browser's Piper adapter uses for
+      // engines that only ever return a finished WAV per call.
+      const parts: Float32Array[] = [];
+      let sampleRate = 48000;
+      for (let i = 0; i < chunks.length; i++) {
+        const { audioBuffer } = await synthesizeOneChunk(chunks[i]!, input.voice);
+        const decoded = decodeWav(audioBuffer);
+        sampleRate = decoded.sampleRate || sampleRate;
+        parts.push(decoded.samples);
+        if (i < chunks.length - 1) {
+          parts.push(new Float32Array(Math.round(sampleRate * 0.06))); // 60ms gap, matches Kokoro/Piper
+        }
+      }
+      const pcm = concatFloat32(parts);
       return {
-        audioBuffer,
-        mimeType: res.headers.get("content-type") ?? "audio/wav",
-        ...(Number.isFinite(durationHeader) && durationHeader > 0
-          ? { durationMs: durationHeader }
-          : {}),
+        audioBuffer: encodeWav(pcm, { sampleRate }),
+        mimeType: "audio/wav",
+        durationMs: (pcm.length / sampleRate) * 1000,
       };
     },
   };
+
+  async function synthesizeOneChunk(text: string, voice?: string): Promise<TtsOutput> {
+    const res = await request("/synthesize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text,
+        ...(voice ? { voice } : {}),
+      }),
+    });
+    if (!res.ok) {
+      throw toTtsError(res.status, (await res.json().catch(() => null)) as SidecarErrorBody | null);
+    }
+    const audioBuffer = await res.arrayBuffer();
+    const durationHeader = Number(res.headers.get("x-duration-ms"));
+    return {
+      audioBuffer,
+      mimeType: res.headers.get("content-type") ?? "audio/wav",
+      ...(Number.isFinite(durationHeader) && durationHeader > 0
+        ? { durationMs: durationHeader }
+        : {}),
+    };
+  }
 }

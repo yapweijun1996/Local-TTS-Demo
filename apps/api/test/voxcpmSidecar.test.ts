@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
-import { TtsError } from "@local-tts/core";
+import { TtsError, encodeWav, decodeWav } from "@local-tts/core";
 import { createVoxcpmSidecarAdapter } from "../src/engines/voxcpmSidecar.js";
 
 type Handler = (req: IncomingMessage, res: ServerResponse, body: string) => void;
@@ -140,5 +140,66 @@ describe("createVoxcpmSidecarAdapter", () => {
     expect(err).toBeInstanceOf(TtsError);
     expect((err as TtsError).code).toBe("VOICE_NOT_FOUND");
     expect((err as TtsError).message).toMatch(/nobody/);
+  });
+});
+
+describe("createVoxcpmSidecarAdapter — chunking long text", () => {
+  // Regression test: a real 1294-char request took >180s in one continuous
+  // sidecar call and got aborted by the client-side timeout ("VoxCPM2
+  // sidecar unreachable: The operation was aborted due to timeout"), even
+  // though the sidecar itself was healthy. Fix: split into <=chunkSize
+  // pieces, one sidecar call each, decode+concat+re-encode the WAVs.
+  let mock: { server: Server; url: string };
+  let synthesizeCallCount = 0;
+  const CHUNK_SAMPLES = 4800; // 0.1s at 48kHz per fake chunk
+
+  beforeAll(async () => {
+    mock = await startMock((req, res, _body) => {
+      if (req.url === "/health") {
+        return json(res, 200, { status: "ok", model: "mock", model_loaded: true });
+      }
+      if (req.url === "/synthesize") {
+        synthesizeCallCount++;
+        const wav = Buffer.from(
+          encodeWav(new Float32Array(CHUNK_SAMPLES).fill(0.5), { sampleRate: 48000 }),
+        );
+        res.writeHead(200, { "content-type": "audio/wav", "x-sample-rate": "48000" });
+        return res.end(wav);
+      }
+      json(res, 404, { error: { code: "GENERATION_FAILED", message: "no route" } });
+    });
+  });
+
+  afterAll(() => {
+    mock.server.close();
+  });
+
+  it("splits text over chunkSize into multiple sidecar calls and concatenates the audio", async () => {
+    synthesizeCallCount = 0;
+    const engine = createVoxcpmSidecarAdapter({ baseUrl: mock.url, chunkSize: 50 });
+    // Plain repeated sentences -- long enough to force several >50-char chunks.
+    const longText = "这是一句测试文本。".repeat(30); // ~270 chars, well over chunkSize=50
+    const out = await engine.synthesize({ text: longText });
+
+    expect(synthesizeCallCount).toBeGreaterThan(1);
+    const decoded = decodeWav(out.audioBuffer);
+    // Concatenated audio must be longer than any single chunk's samples --
+    // proves chunks were actually stitched, not just the last one returned.
+    expect(decoded.samples.length).toBeGreaterThan(CHUNK_SAMPLES * synthesizeCallCount * 0.9);
+    expect(out.durationMs).toBeGreaterThan(0);
+  });
+
+  it("does not split text at or under chunkSize (single call)", async () => {
+    synthesizeCallCount = 0;
+    const engine = createVoxcpmSidecarAdapter({ baseUrl: mock.url, chunkSize: 480 });
+    await engine.synthesize({ text: "短文本，不需要分段。" });
+    expect(synthesizeCallCount).toBe(1);
+  });
+
+  it("chunkSize: 0 disables splitting even for long text", async () => {
+    synthesizeCallCount = 0;
+    const engine = createVoxcpmSidecarAdapter({ baseUrl: mock.url, chunkSize: 0 });
+    await engine.synthesize({ text: "这是一句测试文本。".repeat(30) });
+    expect(synthesizeCallCount).toBe(1);
   });
 });
