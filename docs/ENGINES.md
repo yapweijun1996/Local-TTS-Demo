@@ -152,27 +152,79 @@ All licenses verified commercial-friendly (2026-06-09):
 |---|--------|---------|---------|----------|
 | 6 | **Chatterbox** ⭐ | MIT | ★★★★★ | First GPU engine. Beats ElevenLabs in blind tests; emotion/exaggeration control |
 | 7 | **Orpheus TTS** ⭐ | Apache-2.0 | ★★★★★ | Llama-3B, empathetic; inline emotion tags (`<laugh>`, `<sigh>`). Real-time streaming |
-| 8 | **Higgs Audio V2** | Apache-2.0 | ★★★★ | Multi-speaker, expressive |
+| 8 | **Higgs Audio V2** | ⚠️ custom (not Apache-2.0) | ★★★★ | Multi-speaker, expressive — see license flag below |
 | 9 | **Dia 1.6B** | Apache-2.0 | ★★★★ | Dialogue / multi-turn scripts |
-| 10 | **Qwen3-TTS** ⭐ | Apache-2.0 | ★★★★★ | Native zh/en code-switch in one model; 10 languages; ~97 ms streaming; voice cloning |
+| 10 | **Qwen3-TTS** | Apache-2.0 | ★★★★★ (monolingual) | ⛔ **Rejected for zh/en code-switch** — see below |
+| 11 | **VoxCPM2** ⭐ | Apache-2.0 | ★★★★★ | **Approved 2026-07-21** — native zh/en code-switch, one call, no routing |
 
-**Recommended order:** Chatterbox (most stable quality) → Orpheus (emotive).
-Both reuse one sidecar contract; adding the second engine is config + adapter, not new infra.
+**Recommended order:** VoxCPM2 (approved, use this) → Chatterbox/Orpheus (English-only use cases).
 
-#### 10. Qwen3-TTS (Alibaba Qwen, open-sourced 2026-01)
+#### 10. Qwen3-TTS (Alibaba Qwen, open-sourced 2026-01) — ⛔ rejected for code-switch, 2026-07-21
 
 - 0.6B–1.7B parameters; weights + inference code Apache-2.0
   ([repo](https://github.com/QwenLM/Qwen3-TTS), [LICENSE](https://github.com/QwenLM/Qwen3-TTS/blob/main/LICENSE), verified 2026-07-20)
-- 10 languages: zh, en, ja, ko, de, fr, ru, pt, es, it — **handles mixed
-  Mandarin/English natively in one model**, no per-script routing/stitching needed
-- Streaming generation (~97 ms first-audio), free-form voice design, voice cloning
+- 10 languages: zh, en, ja, ko, de, fr, ru, pt, es, it. Streaming generation
+  (~97 ms first-audio), free-form voice design, voice cloning
 - Serving: HuggingFace transformers + vLLM. **No ONNX export** — LM-based
-  autoregressive + codec decoder, so not Tier 1 viable (see table below)
+  autoregressive + codec decoder, so not Tier 1 viable
 - VRAM: ~3.4 GB for 1.7B fp16 — runs on entry-level GPUs
-- Positioning: server-side premium tier for mixed zh/en synthesis. The browser
-  `mixed` engine (Kokoro EN + Piper ZH stitching) stays as the free/offline path;
-  Qwen3-TTS is the paid/high-quality path for the same input
-- ⚠️ Voice cloning needs abuse safeguards + ToS coverage before any hosted deployment
+- ⛔ **Rejected on live listening tests (2026-07-21):** every built-in speaker
+  is bound to one dominant training language — a Mandarin-native persona
+  (e.g. `vivian`) speaking English carries a heavy accent, and an
+  English-native persona (`ryan`) speaking Chinese does the same in reverse,
+  even when each language segment is synthesized in its own isolated call
+  (per-language routing does NOT fix this — the persona itself is the
+  problem, not in-call mixing). `vivian` specifically is **banned** — see
+  memory: `tts_voice_evaluation_findings.md`. Superseded by VoxCPM2 (#11).
+- ⚠️ Voice cloning needs abuse safeguards + ToS coverage before any hosted deployment (moot while rejected)
+
+#### 11. VoxCPM2 (Tsinghua OpenBMB, released 2026-04) — ⭐ approved 2026-07-21
+
+- 2B parameters, 2M+ hours training data, tokenizer-free diffusion-autoregressive
+  architecture (not a discrete-codebook LM like Qwen3-TTS/CosyVoice) — this
+  architectural difference is likely *why* its code-switch quality held up
+  where the other two failed
+  ([repo](https://github.com/OpenBMB/VoxCPM), [LICENSE](https://github.com/OpenBMB/VoxCPM/blob/main/LICENSE),
+  HF card `license: apache-2.0` confirmed, verified 2026-07-21 — both code and weights clean, no scale-trigger caveats)
+- 30 languages including zh/en + 9 Chinese dialects; 48kHz studio-quality output
+- **Voice Design**: generate a voice from a natural-language description alone,
+  no reference audio needed — format `"(description)text..."`. Also supports
+  Controllable/Ultimate Cloning from a reference clip
+- **Accepted on live listening tests feeding mixed zh/en text in ONE call** —
+  no per-language segment routing needed, unlike Qwen3-TTS/CosyVoice 3
+- Approved default voice (do not change without a new listening-test round):
+  `"一位年长男性，声音浑厚低沉，语速缓慢沉稳，像一位经验丰富的长辈在耐心讲解"`
+  (older male, deep/mellow, slow steady pace) with `cfg_value=2.0, inference_timesteps=10`.
+  Female voices and fast-paced male voices were explicitly rejected in the same round.
+- Install: clean `pip install voxcpm` (Python 3.10–3.12) — no git submodules,
+  no manual model-download scripts, no C++ build toolchain needed. Notably
+  smoother to stand up than CosyVoice 3 or GLM-TTS
+- Sidecar: `services/voxcpm-sidecar/` (Tier 2, same HTTP contract pattern as Qwen's sidecar)
+- See memory: `tts_voice_evaluation_findings.md` for the full evaluation trail
+
+#### License flag: Higgs Audio V2 is NOT Apache-2.0 (correction, 2026-07-21)
+
+Widely repeated as Apache-2.0 (including in this doc, until now) — **wrong**.
+Primary-source check: the HF model card (`bosonai/higgs-audio-v2-generation-3B-base`)
+declares `license: other`, and the actual text is the **"Boson Higgs Audio 2
+Community License Agreement"** (Meta Llama 3 Community License terms
+incorporated by reference, since the model is Llama-3-derived). Key
+restriction: if annual active users exceed 100,000, a separate commercial
+license must be requested from Boson AI — the same "custom RAIL-style license
+with a scale trigger" pattern as IndexTTS-2 (`docs/LICENSING.md`). Not
+blocked outright, but does not meet the clean Apache-2.0/MIT bar (PRD §6) —
+treat like Supertonic v3's OpenRAIL-M flag: review before integrating, don't
+assume it's a no-strings-attached engine.
+
+**Same trap, different model:** IndexTTS-2 (bilibili) was also researched
+2026-07-21 and is **not Apache-2.0** despite what search-engine summaries
+claim — it's a custom "bilibili Model Use License Agreement" with a
+100-million-MAU / ¥1B-revenue commercial trigger and PRC arbitration
+jurisdiction. Not added to the "Cannot use" table below since it's not
+outright non-commercial-blocked (small-scale use is permitted), but it fails
+the clean-license bar the same way Higgs Audio V2 does — verify the primary
+LICENSE file yourself before trusting any "Apache-2.0" claim about a
+bilibili/Boson/Meta-Llama-derived audio model.
 
 ---
 
