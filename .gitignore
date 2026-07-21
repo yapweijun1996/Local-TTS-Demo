@@ -49,3 +49,8 @@ test-results/
 __pycache__/
 *.pyc
 .venv/
+
+# One-off engine evaluation environments (throwaway: venvs + downloaded model
+# weights, several GB each). Not product code — recreate from the upstream
+# repo if needed again (see memory: tts_voice_evaluation_findings.md).
+services/*-eval/
