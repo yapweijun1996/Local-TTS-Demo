@@ -31,9 +31,17 @@ import * as ui from "./ui.js";
 import type { VoiceInfo, ProgressDetail, Phase } from "./ui.js";
 
 // ── Engine + language catalogue ───────────────────────────────────────
-type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper" | "mixed";
+type EngineId = "kokoro-fp32" | "kokoro-fp16" | "kokoro-q4" | "piper" | "mixed" | "voxcpm2";
 type LanguageId = "en" | "zh" | "auto";
 type ChunkStats = KokoroChunkStats | PiperChunkStats;
+
+/**
+ * Base URL for the Node API + VoxCPM2 sidecar (server-backed engine only —
+ * every other engine runs fully client-side). Override with
+ * `VITE_API_BASE_URL` when the API isn't on the default local port.
+ */
+const API_BASE_URL: string =
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:3000";
 
 /**
  * sessionStorage flag: a Piper cache clear was blocked by open OPFS handles,
@@ -83,6 +91,12 @@ const ENGINE_META: Record<EngineId, EngineMeta> = {
     hint: "Detects English and Mandarin per sentence and routes each to the engine that speaks it.",
     sampleRate: 24000,
   },
+  voxcpm2: {
+    id: "voxcpm2",
+    label: "VoxCPM2 (Server) · One voice, zh+en",
+    hint: "Calls a self-hosted API + Python sidecar — requires that server running. Speaks Mandarin/English code-switched text in a single voice, no per-sentence engine hand-off.",
+    sampleRate: 48000,
+  },
 };
 
 interface LanguageMeta {
@@ -95,7 +109,7 @@ interface LanguageMeta {
 const LANGUAGES: LanguageMeta[] = [
   { id: "en", label: "English", engines: ["kokoro-q4", "kokoro-fp16", "kokoro-fp32", "piper"] },
   { id: "zh", label: "中文 (Mandarin)", engines: ["piper"] },
-  { id: "auto", label: "Auto Detect (English + 中文)", engines: ["mixed"] },
+  { id: "auto", label: "Auto Detect (English + 中文)", engines: ["voxcpm2", "mixed"] },
 ];
 
 const SAMPLES: Record<"en" | "zh", string> = {
@@ -424,6 +438,73 @@ function cancelWorkerRun(runId: number): void {
     job.reject(new Error(CANCELLED_ERROR));
   }
   ttsWorker?.postMessage({ type: "cancel", runId });
+  // Not every run is a worker job — voxcpm2 goes over fetch() instead.
+  const controller = voxcpmControllers.get(runId);
+  if (controller) {
+    voxcpmControllers.delete(runId);
+    controller.abort();
+  }
+}
+
+// ── Server-backed engine (VoxCPM2) ────────────────────────────────────
+// The only engine that isn't fully client-side: it calls the Node API, which
+// in turn calls the Python sidecar. Prepare = list voices over HTTP instead
+// of a worker "prepare"; generate = one POST instead of a worker message.
+interface ApiErrorBody {
+  error?: { code?: string; message?: string };
+}
+
+const voxcpmControllers = new Map<number, AbortController>();
+
+async function apiErrorMessage(res: Response, fallback: string): Promise<string> {
+  const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
+  return body?.error?.message ?? fallback;
+}
+
+async function prepareVoxcpm(runId: number): Promise<PrepareResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/api/voices?engine=voxcpm2`);
+  } catch {
+    throw new Error(
+      `Could not reach the API server at ${API_BASE_URL}. Start it with "pnpm --filter @local-tts/api dev" (and the VoxCPM2 sidecar) first.`,
+    );
+  }
+  if (runId !== generationRunId) throw new Error(CANCELLED_ERROR);
+  if (!res.ok) {
+    throw new Error(await apiErrorMessage(res, `API returned HTTP ${res.status}.`));
+  }
+  const body = (await res.json()) as { voices: VoiceInfo[] };
+  return { voices: body.voices, device: "Server (VoxCPM2 sidecar)", sampleRate: 48000 };
+}
+
+async function generateVoxcpm(runId: number, text: string, voice: string): Promise<ArrayBuffer> {
+  const controller = new AbortController();
+  voxcpmControllers.set(runId, controller);
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/tts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ engine: "voxcpm2", text, voice }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(await apiErrorMessage(res, `API returned HTTP ${res.status}.`));
+    }
+    return await res.arrayBuffer();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error(CANCELLED_ERROR);
+    }
+    if (e instanceof TypeError) {
+      throw new Error(
+        `Could not reach the API server at ${API_BASE_URL}. Start it with "pnpm --filter @local-tts/api dev" (and the VoxCPM2 sidecar) first.`,
+      );
+    }
+    throw e;
+  } finally {
+    voxcpmControllers.delete(runId);
+  }
 }
 
 /**
@@ -515,12 +596,19 @@ async function onEngineSwitch(): Promise<void> {
   }
 
   ui.setEngineIdentity(meta.label.replace(" · Recommended", ""), engineIdentityDetail());
-  ui.renderPhase({ kind: "engine-loading", step: "Checking browser cache", pct: null });
+  ui.renderPhase({
+    kind: "engine-loading",
+    step: currentEngine === "voxcpm2" ? "Connecting to local API server" : "Checking browser cache",
+    pct: null,
+  });
 
   // A newer switch supersedes this one; the runId gate below drops stale replies.
   const runId = ++generationRunId;
   try {
-    const prepared = await startWorkerPrepare(runId, currentEngine);
+    const prepared =
+      currentEngine === "voxcpm2"
+        ? await prepareVoxcpm(runId)
+        : await startWorkerPrepare(runId, currentEngine);
     if (runId !== generationRunId) return;
 
     state.voices = prepared.voices;
@@ -607,14 +695,22 @@ async function onGenerate(): Promise<void> {
     ui.appendDebugLog(`[${engine}] generate start len=${text.length}`);
     totalChunkEstimate = Math.max(1, Math.ceil(text.length / CHUNK_SIZE));
 
-    const wavBuffer = await startWorkerGenerate(
-      runId,
-      engine,
-      text,
-      ui.voiceSelect.value || "",
-      onChunk,
-      engine === "mixed" ? ui.zhVoiceSelect.value || "" : undefined,
-    );
+    let wavBuffer: ArrayBuffer;
+    if (engine === "voxcpm2") {
+      // One HTTP call, no per-sentence chunk progress -- show an
+      // indeterminate bar instead of fabricating fake chunk counts.
+      ui.renderPhase({ kind: "generating", step: "Generating on server (VoxCPM2)…", pct: null });
+      wavBuffer = await generateVoxcpm(runId, text, ui.voiceSelect.value || "");
+    } else {
+      wavBuffer = await startWorkerGenerate(
+        runId,
+        engine,
+        text,
+        ui.voiceSelect.value || "",
+        onChunk,
+        engine === "mixed" ? ui.zhVoiceSelect.value || "" : undefined,
+      );
+    }
     if (runId !== generationRunId) return;
 
     const elapsedMs = performance.now() - generationStart;
@@ -709,14 +805,17 @@ async function onPreviewVoice(): Promise<void> {
   previewRunId = runId;
   try {
     const text = currentLanguage === "zh" ? PREVIEW_TEXT.zh : PREVIEW_TEXT.en;
-    const buffer = await startWorkerGenerate(
-      runId,
-      currentEngine,
-      text,
-      ui.voiceSelect.value || "",
-      () => {},
-      currentEngine === "mixed" ? ui.zhVoiceSelect.value || "" : undefined,
-    );
+    const buffer =
+      currentEngine === "voxcpm2"
+        ? await generateVoxcpm(runId, text, ui.voiceSelect.value || "")
+        : await startWorkerGenerate(
+            runId,
+            currentEngine,
+            text,
+            ui.voiceSelect.value || "",
+            () => {},
+            currentEngine === "mixed" ? ui.zhVoiceSelect.value || "" : undefined,
+          );
     if (previewAudio.src) URL.revokeObjectURL(previewAudio.src);
     previewAudio.src = URL.createObjectURL(new Blob([buffer], { type: "audio/wav" }));
     await previewAudio.play().catch(() => {});

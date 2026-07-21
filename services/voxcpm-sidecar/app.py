@@ -5,16 +5,16 @@ process, so it runs here as a sidecar. The Node API talks to this service via
 the thin HTTP contract below; the `TtsEngine` adapter lives in
 apps/api/src/engines/voxcpmSidecar.ts.
 
-VoxCPM2 has no fixed speaker catalog (unlike Qwen3-TTS) -- it uses either
-Voice Design (a natural-language description, no reference audio) or
-Controllable/Ultimate Cloning (a reference audio clip). This service defaults
-to the project's approved Voice Design prompt (see memory:
-tts_voice_evaluation_findings.md) so callers get a good result with zero
-config, while still allowing an override for experimentation.
+VoxCPM2 itself has no fixed speaker catalog (unlike Qwen3-TTS) -- it uses
+either Voice Design (a natural-language description, no reference audio) or
+Controllable/Ultimate Cloning (a reference audio clip). This service pins a
+small, listening-test-approved VOICE_CATALOG of Voice Design prompts so
+callers pick a stable id instead of hand-rolling a fresh, unvalidated
+description every time (see memory: tts_voice_evaluation_findings.md).
 
 Contract (mirrors PRD §15 error envelope, same shape as qwen-tts-sidecar):
   GET  /health     -> { status: "ok"|"loading"|"error", model, model_loaded }
-  GET  /voices     -> { voices: [{ id, name, language }] }  (single default entry)
+  GET  /voices     -> { voices: [{ id, name, language }] }  (VOICE_CATALOG entries)
   POST /synthesize -> audio/wav bytes (X-Sample-Rate / X-Duration-Ms headers)
                       errors: { error: { code, message } }
 
@@ -39,16 +39,35 @@ from pydantic import BaseModel
 MODEL_ID = os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM2")
 MAX_TEXT_LENGTH = int(os.environ.get("VOXCPM_MAX_TEXT_LENGTH", "3000"))
 
-# Approved 2026-07-21 (see memory: tts_voice_evaluation_findings.md) --
-# an older, deep/mellow male voice, slow and steady pace. Do not change this
-# default without a new listening-test round; female and fast-paced male
-# voices were explicitly rejected in the same evaluation.
+# Approved 2026-07-21 (see memory: tts_voice_evaluation_findings.md) -- a
+# senior-executive male voice, steady and measured, won a 4-way comparison
+# on business-register content (the earlier "warm elder male" was the winner
+# on a different, more casual script -- see CATALOG below for both). Do not
+# change this default without a new listening-test round; female and
+# fast-paced male voices were explicitly rejected in the same evaluation.
 DEFAULT_VOICE_DESC = os.environ.get(
     "VOXCPM_DEFAULT_VOICE_DESC",
-    "一位年长男性，声音浑厚低沉，语速缓慢沉稳，像一位经验丰富的长辈在耐心讲解",
+    "一位资深企业高管，声音沉稳有分量，语速适中偏慢，用词干脆，带着经验和权威感，但不生硬",
 )
 
-DEFAULT_VOICE_ID = "warm-elder-male"
+DEFAULT_VOICE_ID = "senior-executive-male"
+
+# Fixed voice catalog -- both entries listening-test approved (2026-07-21).
+# Extend this dict (and re-test) rather than hand-rolling ad-hoc descriptions
+# per request; the whole point of a catalog is a caller picks an id, not a
+# fresh unvalidated prompt each time.
+VOICE_CATALOG: dict[str, dict[str, str]] = {
+    DEFAULT_VOICE_ID: {
+        "name": "Senior executive (default)",
+        "language": "auto",
+        "description": DEFAULT_VOICE_DESC,
+    },
+    "warm-elder-male": {
+        "name": "Warm elder male",
+        "language": "auto",
+        "description": "一位年长男性，声音浑厚低沉，语速缓慢沉稳，像一位经验丰富的长辈在耐心讲解",
+    },
+}
 
 _state: dict[str, Any] = {"model": None, "error": None}
 _generate_lock = threading.Lock()  # one generation at a time (single GPU/MPS context)
@@ -96,12 +115,10 @@ def health() -> dict[str, Any]:
 
 @app.get("/voices")
 def voices() -> dict[str, Any]:
-    # No fixed speaker catalog (Voice Design / cloning, not preset personas).
-    # One default entry so the API-layer registry/UI has something to list;
-    # `voice_description` in /synthesize lets a caller design a different one.
     return {
         "voices": [
-            {"id": DEFAULT_VOICE_ID, "name": "Warm elder male (approved default)", "language": "auto"},
+            {"id": vid, "name": v["name"], "language": v["language"]}
+            for vid, v in VOICE_CATALOG.items()
         ]
     }
 
@@ -122,8 +139,12 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
 
     # Voice Design prefix format: "(description)text..." -- skipped when a
     # reference clip is supplied (Controllable/Ultimate Cloning uses the
-    # reference's timbre, not a text description).
-    desc = req.voice_description or (DEFAULT_VOICE_DESC if req.voice == DEFAULT_VOICE_ID else None)
+    # reference's timbre, not a text description). Unknown `voice` ids fall
+    # back to the default rather than erroring -- callers only ever see ids
+    # this same /voices endpoint handed out, so this only bites hand-crafted
+    # requests, and defaulting is friendlier than a hard VOICE_NOT_FOUND there.
+    catalog_entry = VOICE_CATALOG.get(req.voice)
+    desc = req.voice_description or (catalog_entry["description"] if catalog_entry else DEFAULT_VOICE_DESC)
     prompt_text = f"({desc}){text}" if desc and not req.reference_wav_path else text
 
     try:
