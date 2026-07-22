@@ -18,9 +18,9 @@ shift 2
 if [ "$1" = "--" ]; then shift; fi
 
 elapsed=0
-while ! curl -sf "${SIDECAR_URL}/health" >/dev/null 2>&1; do
+while ! curl -sf "${SIDECAR_URL}/health" 2>/dev/null | grep -q '"model_loaded":true'; do
   if [ "$elapsed" -ge "$TIMEOUT" ]; then
-    echo "wait-for-sidecar: ${SIDECAR_URL}/health did not respond within ${TIMEOUT}s — starting API anyway (voxcpm2 will be marked unavailable until restart)" >&2
+    echo "wait-for-sidecar: model was not ready within ${TIMEOUT}s — starting API anyway (voxcpm2 will be marked unavailable until restart)" >&2
     break
   fi
   sleep 2
