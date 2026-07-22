@@ -8,12 +8,16 @@
 
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { validateText, TtsError, type TtsErrorCode } from "@local-tts/core";
 import { config } from "./config.js";
 import { registry } from "./engines/registry.js";
 import { createKokoroAdapter, KOKORO_LICENSE } from "./engines/kokoro.js";
 import { createQwenSidecarAdapter, QWEN3_TTS_LICENSE } from "./engines/qwenSidecar.js";
 import { createVoxcpmSidecarAdapter, VOXCPM2_LICENSE } from "./engines/voxcpmSidecar.js";
+import { TtsJobStore } from "./jobs/jobStore.js";
+import { TtsJobManager } from "./jobs/jobManager.js";
 
 const server = Fastify({
   logger: config.logText ? { level: "info" } : { level: "warn" },
@@ -61,6 +65,19 @@ if (config.voxcpmSidecarUrl) {
 // Fire-and-forget: load engines in the background so the server starts fast.
 // /health reports "degraded" until the default engine is available.
 const loadPromise = registry.loadAll((msg) => server.log.info(msg));
+const projectRoot = fileURLToPath(new URL("../../..", import.meta.url));
+const jobStore = new TtsJobStore(resolve(projectRoot, config.jobDataDir));
+const jobManager = new TtsJobManager({
+  store: jobStore,
+  resolveEngine: (id) => registry.get(id)?.engine,
+  chunkSize: 120,
+  resultTtlMs: config.jobResultTtlMs,
+  maxDiskBytes: config.jobMaxDiskBytes,
+});
+await jobManager.init();
+loadPromise.then(() => jobManager.start()).catch((err) => server.log.error(err, "Job worker start failed"));
+const jobCleanupTimer = setInterval(() => void jobManager.cleanup(), 60_000);
+jobCleanupTimer.unref();
 
 // ── GET /health ───────────────────────────────────────────────────────
 server.get("/health", async (_request, reply) => {
@@ -124,24 +141,6 @@ interface TtsRequestBody {
   language?: string;
 }
 
-type TtsJobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
-
-interface TtsJob {
-  id: string;
-  status: TtsJobStatus;
-  createdAt: number;
-  body: TtsRequestBody;
-  audio?: Buffer;
-  mimeType?: string;
-  durationMs?: number;
-  error?: ReturnType<TtsError["toJSON"]>;
-}
-
-const ttsJobs = new Map<string, TtsJob>();
-const ttsJobQueue: string[] = [];
-let ttsJobWorkerRunning = false;
-const TTS_JOB_TTL_MS = 30 * 60 * 1000;
-
 function jobError(e: unknown): ReturnType<TtsError["toJSON"]> {
   if (e instanceof TtsError) return e.toJSON();
   return new TtsError(
@@ -149,54 +148,6 @@ function jobError(e: unknown): ReturnType<TtsError["toJSON"]> {
     e instanceof Error ? e.message : "Synthesis failed.",
   ).toJSON();
 }
-
-async function runTtsJobQueue(): Promise<void> {
-  if (ttsJobWorkerRunning) return;
-  ttsJobWorkerRunning = true;
-  try {
-    while (ttsJobQueue.length > 0) {
-      const id = ttsJobQueue.shift()!;
-      const job = ttsJobs.get(id);
-      if (!job || job.status === "cancelled") continue;
-      job.status = "running";
-      try {
-        const engineId = job.body.engine ?? config.engine;
-        const entry = registry.get(engineId);
-        if (!entry) throw new TtsError("ENGINE_NOT_FOUND", `Engine "${engineId}" is not registered.`);
-        if (entry.status !== "available") {
-          throw new TtsError("MODEL_LOAD_FAILED", `Engine "${engineId}" is not available yet.`);
-        }
-        const text = validateText(job.body.text ?? "", { maxLength: config.maxTextLength });
-        const out = await entry.engine.synthesize({
-          text,
-          voice: job.body.voice,
-          language: job.body.language,
-        });
-        if (ttsJobs.get(id)?.status !== "cancelled") {
-          job.audio = Buffer.from(out.audioBuffer);
-          job.mimeType = out.mimeType;
-          job.durationMs = out.durationMs;
-          job.status = "done";
-        }
-      } catch (e) {
-        if (ttsJobs.get(id)?.status !== "cancelled") {
-          job.error = jobError(e);
-          job.status = "failed";
-        }
-      }
-    }
-  } finally {
-    ttsJobWorkerRunning = false;
-  }
-}
-
-const jobCleanupTimer = setInterval(() => {
-  const cutoff = Date.now() - TTS_JOB_TTL_MS;
-  for (const [id, job] of ttsJobs) {
-    if (job.createdAt < cutoff && job.status !== "running") ttsJobs.delete(id);
-  }
-}, 60_000);
-jobCleanupTimer.unref();
 
 // Long-running server TTS must not stay inside one Cloudflare request. Submit
 // quickly, poll this resource, then receive the WAV from a short final GET.
@@ -214,30 +165,25 @@ server.post("/api/tts/jobs", async (request, reply) => {
     return reply.status(STATUS_BY_CODE[code] ?? 400).send(error);
   }
 
-  const id = crypto.randomUUID();
-  ttsJobs.set(id, { id, status: "queued", createdAt: Date.now(), body });
-  ttsJobQueue.push(id);
-  void runTtsJobQueue();
-  return reply.status(202).send({ id, status: "queued" });
+  const job = await jobManager.submit({
+    text: body.text!.trim(),
+    engine: engineId,
+    ...(body.voice ? { voice: body.voice } : {}),
+    ...(body.language ? { language: body.language } : {}),
+  });
+  return reply.status(202).send(job);
 });
 
 server.get<{ Params: { id: string } }>("/api/tts/jobs/:id", async (request, reply) => {
-  const job = ttsJobs.get(request.params.id);
+  const job = jobManager.get(request.params.id);
   if (!job) return reply.status(404).send({ error: { code: "JOB_NOT_FOUND", message: "TTS job not found or expired." } });
-  if (job.status === "failed") return reply.status(500).send(job.error);
-  if (job.status === "cancelled") return reply.status(410).send({ error: { code: "JOB_CANCELLED", message: "TTS job was cancelled." } });
-  if (job.status !== "done" || !job.audio) return reply.send({ id: job.id, status: job.status });
+  if (job.status !== "done") return reply.send(jobManager.getPublic(job.id));
   if (job.durationMs !== undefined) reply.header("X-Duration-Ms", String(Math.round(job.durationMs)));
-  const audio = job.audio;
-  ttsJobs.delete(job.id);
-  return reply.header("Content-Type", job.mimeType ?? "audio/wav").send(audio);
+  return reply.header("Content-Type", job.mimeType ?? "audio/wav").send(await jobManager.result(job.id));
 });
 
 server.delete<{ Params: { id: string } }>("/api/tts/jobs/:id", async (request, reply) => {
-  const job = ttsJobs.get(request.params.id);
-  if (!job) return reply.status(204).send();
-  job.status = "cancelled";
-  job.audio = undefined;
+  await jobManager.cancel(request.params.id);
   return reply.status(204).send();
 });
 

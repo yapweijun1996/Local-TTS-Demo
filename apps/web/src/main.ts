@@ -22,6 +22,10 @@ import {
   formatBytes,
   MAX_DB_BYTES,
   type HistoryEntry,
+  saveActiveJob,
+  listActiveJobs,
+  deleteActiveJob,
+  type ActiveTtsJob,
 } from "./ttsHistory.js";
 // Type-only: erased at build time, so neither engine library is pulled into
 // the main bundle. All model loading now happens inside the worker.
@@ -457,6 +461,20 @@ interface ApiErrorBody {
 }
 
 const voxcpmControllers = new Map<number, AbortController>();
+const voxcpmJobIds = new Map<number, string>();
+const ttsJobChannel = "BroadcastChannel" in window ? new BroadcastChannel("tts-jobs") : null;
+
+interface ApiJobState {
+  id: string;
+  status: ActiveTtsJob["status"];
+  completedChunks: number;
+  totalChunks: number;
+  progress: number;
+  queuePosition: number | null;
+  createdAt: number;
+  updatedAt: number;
+  error?: { message?: string };
+}
 
 async function apiErrorMessage(res: Response, fallback: string): Promise<string> {
   const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
@@ -480,6 +498,100 @@ async function prepareVoxcpm(runId: number): Promise<PrepareResult> {
   return { voices: body.voices, device: "Server (VoxCPM2 sidecar)", sampleRate: 48000 };
 }
 
+function renderServerJobProgress(job: ApiJobState): void {
+  const step = job.status === "queued"
+    ? `Queued${job.queuePosition ? ` · position ${job.queuePosition}` : ""}`
+    : `Generating segment ${Math.min(job.completedChunks + 1, job.totalChunks)} of ${job.totalChunks}`;
+  ui.renderPhase({ kind: "generating", step, pct: job.status === "queued" ? 0 : job.progress });
+}
+
+async function persistServerJob(job: ApiJobState, text: string, voice: string): Promise<void> {
+  await saveActiveJob({
+    jobId: job.id,
+    text,
+    engine: "voxcpm2",
+    voice,
+    status: job.status,
+    completedChunks: job.completedChunks,
+    totalChunks: job.totalChunks,
+    progress: job.progress,
+    queuePosition: job.queuePosition,
+    submittedAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    ...(job.error?.message ? { error: job.error.message } : {}),
+  });
+  ttsJobChannel?.postMessage(job);
+}
+
+async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      window.clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function pollVoxcpmJob(
+  runId: number,
+  jobId: string,
+  text: string,
+  voice: string,
+  controller: AbortController,
+): Promise<ArrayBuffer> {
+  let latest: ApiJobState | undefined;
+  for (;;) {
+    await abortableDelay(1500, controller.signal);
+    const res = await fetch(`${API_BASE_URL}/api/tts/jobs/${encodeURIComponent(jobId)}`, {
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(await apiErrorMessage(res, `API returned HTTP ${res.status}.`));
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("audio/")) {
+      const stored = (await listActiveJobs()).find((job) => job.jobId === jobId);
+      if (latest || stored) {
+        const done: ApiJobState = latest
+          ? { ...latest, status: "done", completedChunks: latest.totalChunks, progress: 100, updatedAt: Date.now() }
+          : {
+              id: jobId,
+              status: "done",
+              completedChunks: stored!.totalChunks,
+              totalChunks: stored!.totalChunks,
+              progress: 100,
+              queuePosition: null,
+              createdAt: stored!.submittedAt,
+              updatedAt: Date.now(),
+            };
+        await persistServerJob(done, text, voice);
+      }
+      return await res.arrayBuffer();
+    }
+    const state = (await res.json()) as ApiJobState;
+    latest = state;
+    await persistServerJob(state, text, voice);
+    if (runId === generationRunId) renderServerJobProgress(state);
+    if (state.status === "failed") throw new Error(state.error?.message ?? "TTS job failed.");
+    if (state.status === "cancelled") throw new Error(CANCELLED_ERROR);
+    if (state.status !== "queued" && state.status !== "running") {
+      throw new Error(`Unexpected TTS job status: ${state.status}.`);
+    }
+  }
+}
+
+ttsJobChannel?.addEventListener("message", (event: MessageEvent<ApiJobState>) => {
+  const state = event.data;
+  if (!state?.id || !voxcpmJobIds.has(activeRunId)) return;
+  if (voxcpmJobIds.get(activeRunId) === state.id && (state.status === "queued" || state.status === "running")) {
+    renderServerJobProgress(state);
+  }
+  if (state.status === "done") void refreshHistoryPanel();
+});
+
 async function generateVoxcpm(runId: number, text: string, voice: string): Promise<ArrayBuffer> {
   const controller = new AbortController();
   voxcpmControllers.set(runId, controller);
@@ -494,33 +606,18 @@ async function generateVoxcpm(runId: number, text: string, voice: string): Promi
     if (!submit.ok) {
       throw new Error(await apiErrorMessage(submit, `API returned HTTP ${submit.status}.`));
     }
-    const submitted = (await submit.json()) as { id: string };
+    const submitted = (await submit.json()) as ApiJobState;
     jobId = submitted.id;
-
-    for (;;) {
-      await new Promise<void>((resolve, reject) => {
-        const timer = window.setTimeout(resolve, 1500);
-        controller.signal.addEventListener("abort", () => {
-          window.clearTimeout(timer);
-          reject(new DOMException("Aborted", "AbortError"));
-        }, { once: true });
-      });
-      const res = await fetch(`${API_BASE_URL}/api/tts/jobs/${encodeURIComponent(jobId)}`, {
-        signal: controller.signal,
-      });
-      if (!res.ok) {
-        throw new Error(await apiErrorMessage(res, `API returned HTTP ${res.status}.`));
-      }
-      const contentType = res.headers.get("content-type") ?? "";
-      if (contentType.includes("audio/")) return await res.arrayBuffer();
-      const state = (await res.json()) as { status: string };
-      if (state.status !== "queued" && state.status !== "running") {
-        throw new Error(`Unexpected TTS job status: ${state.status}.`);
-      }
-    }
+    voxcpmJobIds.set(runId, jobId);
+    await persistServerJob(submitted, text, voice);
+    renderServerJobProgress(submitted);
+    return await pollVoxcpmJob(runId, jobId, text, voice, controller);
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
-      if (jobId) void fetch(`${API_BASE_URL}/api/tts/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+      if (jobId) {
+        void fetch(`${API_BASE_URL}/api/tts/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+        void deleteActiveJob(jobId);
+      }
       throw new Error(CANCELLED_ERROR);
     }
     if (e instanceof TypeError) {
@@ -724,9 +821,7 @@ async function onGenerate(): Promise<void> {
 
     let wavBuffer: ArrayBuffer;
     if (engine === "voxcpm2") {
-      // One HTTP call, no per-sentence chunk progress -- show an
-      // indeterminate bar instead of fabricating fake chunk counts.
-      ui.renderPhase({ kind: "generating", step: "Generating on server (VoxCPM2)…", pct: null });
+      ui.renderPhase({ kind: "generating", step: "Submitting durable server job…", pct: 0 });
       wavBuffer = await generateVoxcpm(runId, text, ui.voiceSelect.value || "");
     } else {
       wavBuffer = await startWorkerGenerate(
@@ -757,6 +852,7 @@ async function onGenerate(): Promise<void> {
     ui.setDebugStatus("Done. Download ready.");
 
     // Persist to IndexedDB history (fire-and-forget; full text saved).
+    const completedServerJobId = voxcpmJobIds.get(runId);
     saveHistoryEntry({
       text,
       engine,
@@ -769,7 +865,10 @@ async function onGenerate(): Promise<void> {
       durationSec,
       createdAt: Date.now(),
     })
-      .then(() => refreshHistoryPanel())
+      .then(async () => {
+        if (completedServerJobId) await deleteActiveJob(completedServerJobId);
+        await refreshHistoryPanel();
+      })
       .catch(() => {});
   } catch (e) {
     if (runId !== generationRunId) return;
@@ -789,11 +888,81 @@ async function onGenerate(): Promise<void> {
       `[${engine}] generate failed => ${e instanceof Error ? e.message : "Unknown error"}`,
     );
   } finally {
+    voxcpmJobIds.delete(runId);
     if (runId === generationRunId) {
       ui.setControlsBusy(false);
       if (activeRunId === runId) activeRunId = 0;
     }
   }
+}
+
+async function recoverActiveVoxcpmJobs(existingJobs?: ActiveTtsJob[]): Promise<void> {
+  const jobs = existingJobs ?? await listActiveJobs().catch(() => [] as ActiveTtsJob[]);
+  if (jobs.length === 0) return;
+
+  if (currentEngine !== "voxcpm2" || !stateOf("voxcpm2").ready) {
+    currentLanguage = "auto";
+    ui.languageSelect.value = "auto";
+    populateEngineDropdown();
+    currentEngine = "voxcpm2";
+    ui.engineSelect.value = "voxcpm2";
+    await onEngineSwitch();
+  }
+
+  for (const active of [...jobs].reverse()) {
+    const runId = ++generationRunId;
+    activeRunId = runId;
+    const controller = new AbortController();
+    voxcpmControllers.set(runId, controller);
+    voxcpmJobIds.set(runId, active.jobId);
+    ui.textInput.value = active.text;
+    ui.updateCharCount();
+    ui.clearError();
+    ui.setControlsBusy(true);
+    ui.appendDebugLog(`[voxcpm2] resuming job ${active.jobId}`);
+    const started = performance.now();
+    try {
+      const wavBuffer = await pollVoxcpmJob(runId, active.jobId, active.text, active.voice, controller);
+      const durationSec = wavDurationSec(wavBuffer);
+      const blob = new Blob([wavBuffer], { type: "audio/wav" });
+      currentWav = blob;
+      if (ui.audioPlayer.src) URL.revokeObjectURL(ui.audioPlayer.src);
+      ui.showResult(URL.createObjectURL(blob), {
+        voice: active.voice,
+        language: "Auto Detect (English + 中文)",
+        durationSec,
+        elapsedMs: performance.now() - started,
+      });
+      ui.renderPhase({ kind: "done", elapsedMs: performance.now() - started });
+      await saveHistoryEntry({
+        text: active.text,
+        engine: "voxcpm2",
+        voice: active.voice,
+        wavBlob: blob,
+        byteLength: wavBuffer.byteLength,
+        durationSec,
+        createdAt: Date.now(),
+      });
+      await deleteActiveJob(active.jobId);
+      ui.appendDebugLog(`[voxcpm2] resumed job completed ${active.jobId}`);
+    } catch (e) {
+      if (!(e instanceof Error && e.message === CANCELLED_ERROR)) {
+        ui.showError(ui.toUserError(e, "generate"));
+        ui.appendDebugLog(`[voxcpm2] resume failed ${active.jobId} => ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const latest = (await listActiveJobs()).find((job) => job.jobId === active.jobId);
+      const message = e instanceof Error ? e.message.toLowerCase() : "";
+      const terminal = latest?.status === "failed" || latest?.status === "cancelled" ||
+        message.includes("not found") || message.includes("expired");
+      if (terminal) await deleteActiveJob(active.jobId);
+    } finally {
+      voxcpmControllers.delete(runId);
+      voxcpmJobIds.delete(runId);
+      if (activeRunId === runId) activeRunId = 0;
+      ui.setControlsBusy(false);
+    }
+  }
+  await refreshHistoryPanel();
 }
 
 function onCancelGenerate(): void {
@@ -1126,6 +1295,12 @@ async function init(): Promise<void> {
     }
   }
 
+  const pendingJobs = await listActiveJobs().catch(() => [] as ActiveTtsJob[]);
+  if (pendingJobs.length > 0) {
+    currentLanguage = "auto";
+    currentEngine = "voxcpm2";
+  }
+
   populateLanguageDropdown();
   populateEngineDropdown();
 
@@ -1135,6 +1310,8 @@ async function init(): Promise<void> {
     ui.showError(ui.toUserError(e, "load"));
     ui.renderPhase({ kind: "engine-failed" });
   }
+
+  await recoverActiveVoxcpmJobs(pendingJobs);
 
   void refreshHistoryPanel();
   void refreshAdvancedPanel();

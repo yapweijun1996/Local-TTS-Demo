@@ -18,6 +18,10 @@ export interface TtsInput {
   speed?: number;
   language?: string;
   format?: "wav";
+  /** Durable server-job identity; ignored by in-browser engines. */
+  jobId?: string;
+  /** Zero-based durable chunk index, paired with jobId for idempotent sidecars. */
+  chunkIndex?: number;
 }
 
 export interface TtsOutput {

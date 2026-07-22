@@ -55,6 +55,7 @@ curl -X POST http://localhost:3000/api/tts \
 | `VOXCPM_MODEL` | `openbmb/VoxCPM2` | HF model id |
 | `VOXCPM_MAX_TEXT_LENGTH` | `3000` | Keep in sync with API `TTS_MAX_TEXT_LENGTH` |
 | `VOXCPM_DEFAULT_VOICE_DESC` | (approved elder-male prompt) | Override only for experimentation |
+| `VOXCPM_JOB_CACHE_DIR` | `../../data/tts-jobs/sidecar-cache` | Idempotent per-job chunk cache used for restart recovery |
 
 ## Docker
 

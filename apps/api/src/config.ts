@@ -44,6 +44,12 @@ export interface AppConfig {
   voxcpmSidecarUrl: string;
   /** Per-request VoxCPM2 sidecar timeout (generation on CPU can take minutes). */
   voxcpmSidecarTimeoutMs: number;
+  /** Durable async-job metadata, chunks, and result directory. */
+  jobDataDir: string;
+  /** Retain terminal job results for this many milliseconds. */
+  jobResultTtlMs: number;
+  /** Maximum durable job storage before oldest terminal results are pruned. */
+  jobMaxDiskBytes: number;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -62,6 +68,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     qwenSidecarTimeoutMs: overrides.qwenSidecarTimeoutMs ?? envInt("TTS_QWEN_SIDECAR_TIMEOUT_MS", 120000, 1000),
     voxcpmSidecarUrl:   overrides.voxcpmSidecarUrl   ?? envStr("TTS_VOXCPM_SIDECAR_URL",    ""),
     voxcpmSidecarTimeoutMs: overrides.voxcpmSidecarTimeoutMs ?? envInt("TTS_VOXCPM_SIDECAR_TIMEOUT_MS", 180000, 1000),
+    jobDataDir: overrides.jobDataDir ?? envStr("TTS_JOB_DATA_DIR", "data/tts-jobs"),
+    jobResultTtlMs: overrides.jobResultTtlMs ?? envInt("TTS_JOB_RESULT_TTL_MS", 3600000, 60000),
+    jobMaxDiskBytes: overrides.jobMaxDiskBytes ?? envInt("TTS_JOB_MAX_DISK_BYTES", 2147483648, 1048576),
   };
 }
 

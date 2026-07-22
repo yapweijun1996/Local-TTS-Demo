@@ -39,6 +39,18 @@ Local-TTS-Demo/
 | `TTS_ENABLE_CORS` | `true` | toggle CORS |
 | `TTS_CORS_ORIGIN` | `*` | allowed origin(s); tighten for exposed deploys |
 | `TTS_LOG_TEXT` | `false` | never log full user text in prod |
+| `TTS_JOB_DATA_DIR` | `data/tts-jobs` | durable async-job metadata, chunks, and results |
+| `TTS_JOB_RESULT_TTL_MS` | `3600000` | retain terminal jobs/results for refresh recovery |
+| `TTS_JOB_MAX_DISK_BYTES` | `2147483648` | prune oldest terminal results above this disk budget |
+
+### Durable server TTS jobs
+
+`POST /api/tts/jobs` returns a UUID and persists the request before generation.
+Poll `GET /api/tts/jobs/:id` for `queued`/`running` status and chunk progress;
+the same endpoint returns `audio/wav` when complete. `DELETE` explicitly
+cancels a job. The API reloads queued/running records after restart and reuses
+completed chunks. Browser clients store active UUIDs in IndexedDB and resume
+polling after refresh.
 
 ## Common commands (target)
 ```bash

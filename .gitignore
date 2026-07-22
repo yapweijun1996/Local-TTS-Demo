@@ -13,6 +13,7 @@ models/*
 
 # Generated audio output (privacy: never commit user-generated audio)
 output/
+data/tts-jobs/
 *.wav
 *.mp3
 *.ogg
@@ -36,6 +37,7 @@ pnpm-debug.log*
 # Test / coverage
 coverage/
 .playwright/
+.playwright-cli/
 test-results/
 
 # Allow small audio test fixtures (override the *.wav / output rules above)

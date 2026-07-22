@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import threading
 from contextlib import asynccontextmanager
 from typing import Any, Optional
@@ -40,6 +41,11 @@ MODEL_ID = os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM2")
 MAX_TEXT_LENGTH = int(os.environ.get("VOXCPM_MAX_TEXT_LENGTH", "3000"))
 MAX_AUDIO_TOKENS = int(os.environ.get("VOXCPM_MAX_AUDIO_TOKENS", "1200"))
 AUDIO_TOKENS_PER_CHAR = int(os.environ.get("VOXCPM_AUDIO_TOKENS_PER_CHAR", "8"))
+JOB_CACHE_DIR = os.environ.get(
+    "VOXCPM_JOB_CACHE_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/tts-jobs/sidecar-cache")),
+)
+JOB_ID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
 # Approved 2026-07-21 (see memory: tts_voice_evaluation_findings.md) -- a
 # senior-executive male voice, steady and measured, won a 4-way comparison
@@ -106,6 +112,24 @@ class SynthesizeRequest(BaseModel):
     reference_wav_path: Optional[str] = None
     cfg_value: float = 2.0
     inference_timesteps: int = 10
+    job_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+
+
+def _cached_chunk_path(req: SynthesizeRequest) -> Optional[str]:
+    if req.job_id is None or req.chunk_index is None:
+        return None
+    if not JOB_ID_RE.fullmatch(req.job_id) or req.chunk_index < 0:
+        return None
+    return os.path.join(JOB_CACHE_DIR, req.job_id, f"{req.chunk_index:04d}.wav")
+
+
+def _wav_response(wav_bytes: bytes, sample_rate: int, duration_ms: int) -> Response:
+    return Response(
+        content=wav_bytes,
+        media_type="audio/wav",
+        headers={"X-Sample-Rate": str(sample_rate), "X-Duration-Ms": str(duration_ms)},
+    )
 
 
 @app.get("/health")
@@ -155,9 +179,18 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
     # the voice-design description) and fail once instead of silently doing
     # the same expensive generation again.
     max_audio_tokens = min(MAX_AUDIO_TOKENS, max(128, len(text) * AUDIO_TOKENS_PER_CHAR))
+    cache_path = _cached_chunk_path(req)
 
     try:
         with _generate_lock:
+            if cache_path and os.path.isfile(cache_path):
+                import soundfile as sf
+
+                with sf.SoundFile(cache_path) as cached:
+                    sample_rate = cached.samplerate
+                    duration_ms = int(cached.frames / sample_rate * 1000)
+                with open(cache_path, "rb") as cached_file:
+                    return _wav_response(cached_file.read(), sample_rate, duration_ms)
             wav = model.generate(
                 text=prompt_text,
                 reference_wav_path=req.reference_wav_path,
@@ -176,8 +209,10 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
     sf.write(buf, wav, sample_rate, format="WAV")
     wav_bytes = buf.getvalue()
     duration_ms = int(len(wav) / sample_rate * 1000)
-    return Response(
-        content=wav_bytes,
-        media_type="audio/wav",
-        headers={"X-Sample-Rate": str(sample_rate), "X-Duration-Ms": str(duration_ms)},
-    )
+    if cache_path:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        temp_path = f"{cache_path}.{os.getpid()}.tmp"
+        with open(temp_path, "wb") as cached_file:
+            cached_file.write(wav_bytes)
+        os.replace(temp_path, cache_path)
+    return _wav_response(wav_bytes, sample_rate, duration_ms)

@@ -32,6 +32,9 @@ describe("loadConfig", () => {
     expect(c.qwenSidecarTimeoutMs).toBe(120000);
     expect(c.voxcpmSidecarUrl).toBe("");
     expect(c.voxcpmSidecarTimeoutMs).toBe(180000);
+    expect(c.jobDataDir).toBe("data/tts-jobs");
+    expect(c.jobResultTtlMs).toBe(3600000);
+    expect(c.jobMaxDiskBytes).toBe(2147483648);
   });
 
   it("reads independent sidecar URLs for Qwen and VoxCPM2", () => {

@@ -497,6 +497,13 @@ export function toUserError(e: unknown, context: "load" | "generate"): UserError
       technical: raw,
     };
   }
+  if (lower.includes("job not found") || lower.includes("not found or expired")) {
+    return {
+      title: "The saved generation is no longer available",
+      hint: "The server may have restarted before persistence was enabled, or the result expired. Submit it again.",
+      technical: raw,
+    };
+  }
   if (lower.includes("fetch") || lower.includes("network") || lower.includes("failed to load")) {
     return {
       title: "Download failed",

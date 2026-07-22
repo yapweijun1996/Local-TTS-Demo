@@ -125,6 +125,21 @@ describe("createVoxcpmSidecarAdapter", () => {
     expect(lastSynthesizeBody).toEqual({ text: "hello" });
   });
 
+  it("forwards durable job identity for idempotent chunk retries", async () => {
+    synthesizeStatus = "ok";
+    const engine = createVoxcpmSidecarAdapter({ baseUrl: mock.url });
+    await engine.synthesize({
+      text: "durable chunk",
+      jobId: "123e4567-e89b-12d3-a456-426614174000",
+      chunkIndex: 3,
+    });
+    expect(lastSynthesizeBody).toEqual({
+      text: "durable chunk",
+      job_id: "123e4567-e89b-12d3-a456-426614174000",
+      chunk_index: 3,
+    });
+  });
+
   it("maps sidecar 503 onto TtsError MODEL_LOAD_FAILED", async () => {
     synthesizeStatus = "warming";
     const engine = createVoxcpmSidecarAdapter({ baseUrl: mock.url });

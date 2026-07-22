@@ -9,8 +9,9 @@
  */
 
 const DB_NAME = "tts-history";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE = "entries";
+const ACTIVE_STORE = "activeJobs";
 
 /** Total WAV bytes allowed across all history entries. Oldest are pruned on save. */
 export const MAX_DB_BYTES = 50 * 1024 * 1024; // 50 MB
@@ -36,6 +37,21 @@ export interface HistoryEntry {
   createdAt: number;
 }
 
+export interface ActiveTtsJob {
+  jobId: string;
+  text: string;
+  engine: "voxcpm2";
+  voice: string;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  completedChunks: number;
+  totalChunks: number;
+  progress: number;
+  queuePosition: number | null;
+  submittedAt: number;
+  updatedAt: number;
+  error?: string;
+}
+
 // -- DB open ----------------------------------------------------------------
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -51,9 +67,52 @@ function openDb(): Promise<IDBDatabase> {
         // and newest-first for display.
         store.createIndex("createdAt", "createdAt", { unique: false });
       }
+      if (!db.objectStoreNames.contains(ACTIVE_STORE)) {
+        const active = db.createObjectStore(ACTIVE_STORE, { keyPath: "jobId" });
+        active.createIndex("submittedAt", "submittedAt", { unique: false });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
+  });
+}
+
+export async function saveActiveJob(job: ActiveTtsJob): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_STORE, "readwrite");
+    tx.objectStore(ACTIVE_STORE).put(job);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function listActiveJobs(): Promise<ActiveTtsJob[]> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_STORE, "readonly");
+    const req = tx.objectStore(ACTIVE_STORE).index("submittedAt").openCursor(null, "prev");
+    const jobs: ActiveTtsJob[] = [];
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        jobs.push(cursor.value as ActiveTtsJob);
+        cursor.continue();
+      } else {
+        resolve(jobs);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function deleteActiveJob(jobId: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_STORE, "readwrite");
+    tx.objectStore(ACTIVE_STORE).delete(jobId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 

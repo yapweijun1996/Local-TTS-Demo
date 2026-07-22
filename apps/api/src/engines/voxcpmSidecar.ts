@@ -146,7 +146,7 @@ export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngin
           : [input.text];
 
       if (chunks.length <= 1) {
-        return synthesizeOneChunk(input.text, input.voice);
+        return synthesizeOneChunk(input.text, input.voice, input.jobId, input.chunkIndex);
       }
 
       // Multi-chunk: one sidecar call per chunk (each still speaks mixed
@@ -157,7 +157,12 @@ export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngin
       const parts: Float32Array[] = [];
       let sampleRate = 48000;
       for (let i = 0; i < chunks.length; i++) {
-        const { audioBuffer } = await synthesizeOneChunk(chunks[i]!, input.voice);
+        const { audioBuffer } = await synthesizeOneChunk(
+          chunks[i]!,
+          input.voice,
+          input.jobId,
+          input.chunkIndex === undefined ? undefined : input.chunkIndex + i,
+        );
         const decoded = decodeWav(audioBuffer);
         sampleRate = decoded.sampleRate || sampleRate;
         parts.push(decoded.samples);
@@ -174,13 +179,20 @@ export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngin
     },
   };
 
-  async function synthesizeOneChunk(text: string, voice?: string): Promise<TtsOutput> {
+  async function synthesizeOneChunk(
+    text: string,
+    voice?: string,
+    jobId?: string,
+    chunkIndex?: number,
+  ): Promise<TtsOutput> {
     const res = await request("/synthesize", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         text,
         ...(voice ? { voice } : {}),
+        ...(jobId ? { job_id: jobId } : {}),
+        ...(chunkIndex !== undefined ? { chunk_index: chunkIndex } : {}),
       }),
     });
     if (!res.ok) {
