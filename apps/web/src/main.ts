@@ -38,10 +38,12 @@ type ChunkStats = KokoroChunkStats | PiperChunkStats;
 /**
  * Base URL for the Node API + VoxCPM2 sidecar (server-backed engine only —
  * every other engine runs fully client-side). Override with
- * `VITE_API_BASE_URL` when the API isn't on the default local port.
+ * `VITE_API_BASE_URL` when the API isn't on the current web origin. Local
+ * development keeps the standalone API's conventional port 3000.
  */
 const API_BASE_URL: string =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:3000";
+  (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
+  (import.meta.env.DEV ? "http://localhost:3000" : window.location.origin);
 
 /**
  * sessionStorage flag: a Piper cache clear was blocked by open OPFS handles,
