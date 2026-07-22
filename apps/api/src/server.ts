@@ -52,6 +52,7 @@ if (config.voxcpmSidecarUrl) {
     createVoxcpmSidecarAdapter({
       baseUrl: config.voxcpmSidecarUrl,
       timeoutMs: config.voxcpmSidecarTimeoutMs,
+      chunkSize: 120,
     }),
     VOXCPM2_LICENSE,
   );
@@ -122,6 +123,123 @@ interface TtsRequestBody {
   voice?: string;
   language?: string;
 }
+
+type TtsJobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+interface TtsJob {
+  id: string;
+  status: TtsJobStatus;
+  createdAt: number;
+  body: TtsRequestBody;
+  audio?: Buffer;
+  mimeType?: string;
+  durationMs?: number;
+  error?: ReturnType<TtsError["toJSON"]>;
+}
+
+const ttsJobs = new Map<string, TtsJob>();
+const ttsJobQueue: string[] = [];
+let ttsJobWorkerRunning = false;
+const TTS_JOB_TTL_MS = 30 * 60 * 1000;
+
+function jobError(e: unknown): ReturnType<TtsError["toJSON"]> {
+  if (e instanceof TtsError) return e.toJSON();
+  return new TtsError(
+    "GENERATION_FAILED",
+    e instanceof Error ? e.message : "Synthesis failed.",
+  ).toJSON();
+}
+
+async function runTtsJobQueue(): Promise<void> {
+  if (ttsJobWorkerRunning) return;
+  ttsJobWorkerRunning = true;
+  try {
+    while (ttsJobQueue.length > 0) {
+      const id = ttsJobQueue.shift()!;
+      const job = ttsJobs.get(id);
+      if (!job || job.status === "cancelled") continue;
+      job.status = "running";
+      try {
+        const engineId = job.body.engine ?? config.engine;
+        const entry = registry.get(engineId);
+        if (!entry) throw new TtsError("ENGINE_NOT_FOUND", `Engine "${engineId}" is not registered.`);
+        if (entry.status !== "available") {
+          throw new TtsError("MODEL_LOAD_FAILED", `Engine "${engineId}" is not available yet.`);
+        }
+        const text = validateText(job.body.text ?? "", { maxLength: config.maxTextLength });
+        const out = await entry.engine.synthesize({
+          text,
+          voice: job.body.voice,
+          language: job.body.language,
+        });
+        if (ttsJobs.get(id)?.status !== "cancelled") {
+          job.audio = Buffer.from(out.audioBuffer);
+          job.mimeType = out.mimeType;
+          job.durationMs = out.durationMs;
+          job.status = "done";
+        }
+      } catch (e) {
+        if (ttsJobs.get(id)?.status !== "cancelled") {
+          job.error = jobError(e);
+          job.status = "failed";
+        }
+      }
+    }
+  } finally {
+    ttsJobWorkerRunning = false;
+  }
+}
+
+const jobCleanupTimer = setInterval(() => {
+  const cutoff = Date.now() - TTS_JOB_TTL_MS;
+  for (const [id, job] of ttsJobs) {
+    if (job.createdAt < cutoff && job.status !== "running") ttsJobs.delete(id);
+  }
+}, 60_000);
+jobCleanupTimer.unref();
+
+// Long-running server TTS must not stay inside one Cloudflare request. Submit
+// quickly, poll this resource, then receive the WAV from a short final GET.
+server.post("/api/tts/jobs", async (request, reply) => {
+  const body = (request.body ?? {}) as TtsRequestBody;
+  const engineId = body.engine ?? config.engine;
+  const entry = registry.get(engineId);
+  if (!entry) return reply.status(404).send(new TtsError("ENGINE_NOT_FOUND", `Engine "${engineId}" is not registered.`).toJSON());
+  if (entry.status !== "available") return reply.status(503).send(new TtsError("MODEL_LOAD_FAILED", `Engine "${engineId}" is not available yet.`).toJSON());
+  try {
+    validateText(body.text ?? "", { maxLength: config.maxTextLength });
+  } catch (e) {
+    const error = jobError(e);
+    const code = error.error.code as TtsErrorCode;
+    return reply.status(STATUS_BY_CODE[code] ?? 400).send(error);
+  }
+
+  const id = crypto.randomUUID();
+  ttsJobs.set(id, { id, status: "queued", createdAt: Date.now(), body });
+  ttsJobQueue.push(id);
+  void runTtsJobQueue();
+  return reply.status(202).send({ id, status: "queued" });
+});
+
+server.get<{ Params: { id: string } }>("/api/tts/jobs/:id", async (request, reply) => {
+  const job = ttsJobs.get(request.params.id);
+  if (!job) return reply.status(404).send({ error: { code: "JOB_NOT_FOUND", message: "TTS job not found or expired." } });
+  if (job.status === "failed") return reply.status(500).send(job.error);
+  if (job.status === "cancelled") return reply.status(410).send({ error: { code: "JOB_CANCELLED", message: "TTS job was cancelled." } });
+  if (job.status !== "done" || !job.audio) return reply.send({ id: job.id, status: job.status });
+  if (job.durationMs !== undefined) reply.header("X-Duration-Ms", String(Math.round(job.durationMs)));
+  const audio = job.audio;
+  ttsJobs.delete(job.id);
+  return reply.header("Content-Type", job.mimeType ?? "audio/wav").send(audio);
+});
+
+server.delete<{ Params: { id: string } }>("/api/tts/jobs/:id", async (request, reply) => {
+  const job = ttsJobs.get(request.params.id);
+  if (!job) return reply.status(204).send();
+  job.status = "cancelled";
+  job.audio = undefined;
+  return reply.status(204).send();
+});
 
 server.post("/api/tts", async (request, reply) => {
   const body = (request.body ?? {}) as TtsRequestBody;

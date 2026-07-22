@@ -38,6 +38,8 @@ from pydantic import BaseModel
 
 MODEL_ID = os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM2")
 MAX_TEXT_LENGTH = int(os.environ.get("VOXCPM_MAX_TEXT_LENGTH", "3000"))
+MAX_AUDIO_TOKENS = int(os.environ.get("VOXCPM_MAX_AUDIO_TOKENS", "1200"))
+AUDIO_TOKENS_PER_CHAR = int(os.environ.get("VOXCPM_AUDIO_TOKENS_PER_CHAR", "8"))
 
 # Approved 2026-07-21 (see memory: tts_voice_evaluation_findings.md) -- a
 # senior-executive male voice, steady and measured, won a 4-way comparison
@@ -147,6 +149,13 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
     desc = req.voice_description or (catalog_entry["description"] if catalog_entry else DEFAULT_VOICE_DESC)
     prompt_text = f"({desc}){text}" if desc and not req.reference_wav_path else text
 
+    # VoxCPM defaults to 4096 output tokens and may retry a bad case three
+    # times. On Apple MPS that can turn a short sentence into tens of minutes
+    # of abandoned work. Bound output from the actual spoken text (excluding
+    # the voice-design description) and fail once instead of silently doing
+    # the same expensive generation again.
+    max_audio_tokens = min(MAX_AUDIO_TOKENS, max(128, len(text) * AUDIO_TOKENS_PER_CHAR))
+
     try:
         with _generate_lock:
             wav = model.generate(
@@ -154,6 +163,8 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
                 reference_wav_path=req.reference_wav_path,
                 cfg_value=req.cfg_value,
                 inference_timesteps=req.inference_timesteps,
+                max_len=max_audio_tokens,
+                retry_badcase=False,
             )
     except Exception as e:
         return _error(500, "GENERATION_FAILED", f"{type(e).__name__}: {e}")

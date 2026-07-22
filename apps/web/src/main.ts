@@ -481,19 +481,44 @@ async function prepareVoxcpm(runId: number): Promise<PrepareResult> {
 async function generateVoxcpm(runId: number, text: string, voice: string): Promise<ArrayBuffer> {
   const controller = new AbortController();
   voxcpmControllers.set(runId, controller);
+  let jobId = "";
   try {
-    const res = await fetch(`${API_BASE_URL}/api/tts`, {
+    const submit = await fetch(`${API_BASE_URL}/api/tts/jobs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ engine: "voxcpm2", text, voice }),
       signal: controller.signal,
     });
-    if (!res.ok) {
-      throw new Error(await apiErrorMessage(res, `API returned HTTP ${res.status}.`));
+    if (!submit.ok) {
+      throw new Error(await apiErrorMessage(submit, `API returned HTTP ${submit.status}.`));
     }
-    return await res.arrayBuffer();
+    const submitted = (await submit.json()) as { id: string };
+    jobId = submitted.id;
+
+    for (;;) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(resolve, 1500);
+        controller.signal.addEventListener("abort", () => {
+          window.clearTimeout(timer);
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      });
+      const res = await fetch(`${API_BASE_URL}/api/tts/jobs/${encodeURIComponent(jobId)}`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(await apiErrorMessage(res, `API returned HTTP ${res.status}.`));
+      }
+      const contentType = res.headers.get("content-type") ?? "";
+      if (contentType.includes("audio/")) return await res.arrayBuffer();
+      const state = (await res.json()) as { status: string };
+      if (state.status !== "queued" && state.status !== "running") {
+        throw new Error(`Unexpected TTS job status: ${state.status}.`);
+      }
+    }
   } catch (e) {
     if (e instanceof DOMException && e.name === "AbortError") {
+      if (jobId) void fetch(`${API_BASE_URL}/api/tts/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
       throw new Error(CANCELLED_ERROR);
     }
     if (e instanceof TypeError) {
