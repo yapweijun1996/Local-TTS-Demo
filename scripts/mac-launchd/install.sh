@@ -1,13 +1,15 @@
 #!/bin/bash
-# Install the VoxCPM2 sidecar + Node API as macOS launchd services.
+# Install the commercial-only Kokoro/VoxCPM2 sidecars + Node API as macOS
+# launchd services.
 #
 # Run-at-login + auto-restart-on-crash, in the right start order (sidecar
-# before API — see wait-for-sidecar.sh for why). Designed for the Mac Mini
-# M4 production target: VoxCPM2 needs Apple Silicon GPU (MPS) access, which
-# Docker Desktop on macOS cannot provide (it runs containers in a Linux VM
-# with no Metal passthrough) — so these run as native launchd jobs, not
-# containers. See memory: tts_voice_evaluation_findings.md for why VoxCPM2
-# is the engine and docs/ENGINES.md for the architecture rationale.
+# before API — see wait-for-sidecar.sh for why). Kokoro v1.1-zh handles
+# Mandarin locally; VoxCPM2 remains the configured fallback. Designed for the
+# Mac Mini M4 production target: VoxCPM2 needs Apple Silicon GPU (MPS) access,
+# which Docker Desktop on macOS cannot provide (it runs containers in a Linux
+# VM with no Metal passthrough) — so these run as native launchd jobs, not
+# containers. See docs/ENGINES.md and docs/LICENSING.md for the architecture
+# and commercial-use rationale.
 #
 # Usage: ./scripts/mac-launchd/install.sh
 
@@ -19,9 +21,11 @@ LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/Library/Logs/local-tts-demo"
 
 VOXCPM_LABEL="com.local-tts.voxcpm-sidecar"
+KOKORO_LABEL="com.local-tts.kokoro-zh-sidecar"
 API_LABEL="com.local-tts.api"
 VOXCPM_PORT="8200"
-API_PORT="3000"
+KOKORO_PORT="8201"
+API_PORT="6700"
 
 echo "== Local TTS Demo — launchd install =="
 echo "Project root: $PROJECT_ROOT"
@@ -84,15 +88,17 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 echo "Using Python: $PYTHON_BIN ($($PYTHON_BIN --version))"
 
-# ── VoxCPM2 sidecar venv ──────────────────────────────────────────────
+# ── Shared Python sidecar venv ────────────────────────────────────────
 SIDECAR_DIR="$PROJECT_ROOT/services/voxcpm-sidecar"
 if [ ! -x "$SIDECAR_DIR/.venv/bin/uvicorn" ]; then
-  echo "Setting up VoxCPM2 sidecar venv (this downloads torch + voxcpm, can take a few minutes)..."
+  echo "Setting up TTS sidecar venv (this downloads torch + models, can take a few minutes)..."
   "$PYTHON_BIN" -m venv "$SIDECAR_DIR/.venv"
-  "$SIDECAR_DIR/.venv/bin/pip" install -q --upgrade pip
-  "$SIDECAR_DIR/.venv/bin/pip" install -q -r "$SIDECAR_DIR/requirements.txt"
-else
-  echo "VoxCPM2 sidecar venv already set up, skipping."
+fi
+"$SIDECAR_DIR/.venv/bin/pip" install -q --upgrade pip
+"$SIDECAR_DIR/.venv/bin/pip" install -q -r "$SIDECAR_DIR/requirements.txt"
+if ! "$SIDECAR_DIR/.venv/bin/python" -c 'import spacy; raise SystemExit(0 if spacy.util.is_package("en_core_web_sm") else 1)' 2>/dev/null; then
+  echo "Installing the pinned English G2P model used for mixed zh/en Podcast text..."
+  "$SIDECAR_DIR/.venv/bin/python" -m spacy download en_core_web_sm
 fi
 
 # ── API build ─────────────────────────────────────────────────────────
@@ -128,6 +134,39 @@ cat > "$LAUNCH_AGENTS_DIR/$VOXCPM_LABEL.plist" <<PLIST
 </plist>
 PLIST
 
+KOKORO_SIDECAR_DIR="$PROJECT_ROOT/services/kokoro-sidecar"
+cat > "$LAUNCH_AGENTS_DIR/$KOKORO_LABEL.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$KOKORO_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$SIDECAR_DIR/.venv/bin/uvicorn</string>
+    <string>app:app</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>$KOKORO_PORT</string>
+  </array>
+  <key>WorkingDirectory</key><string>$KOKORO_SIDECAR_DIR</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HF_HOME</key><string>$HOME/.cache/tts-models</string>
+    <key>KOKORO_MODEL</key><string>hexgrad/Kokoro-82M-v1.1-zh</string>
+    <key>KOKORO_DEVICE</key><string>cpu</string>
+    <key>KOKORO_DEFAULT_VOICE</key><string>zf_001</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>StandardOutPath</key><string>$LOG_DIR/kokoro-zh-sidecar.log</string>
+  <key>StandardErrorPath</key><string>$LOG_DIR/kokoro-zh-sidecar.error.log</string>
+</dict>
+</plist>
+PLIST
+
 cat > "$LAUNCH_AGENTS_DIR/$API_LABEL.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -137,7 +176,7 @@ cat > "$LAUNCH_AGENTS_DIR/$API_LABEL.plist" <<PLIST
   <key>ProgramArguments</key>
   <array>
     <string>$SCRIPT_DIR/wait-for-sidecar.sh</string>
-    <string>http://127.0.0.1:$VOXCPM_PORT</string>
+    <string>http://127.0.0.1:$VOXCPM_PORT,http://127.0.0.1:$KOKORO_PORT</string>
     <string>60</string>
     <string>--</string>
     <string>$(command -v node)</string>
@@ -147,7 +186,20 @@ cat > "$LAUNCH_AGENTS_DIR/$API_LABEL.plist" <<PLIST
   <key>EnvironmentVariables</key>
   <dict>
     <key>PORT</key><string>$API_PORT</string>
+    <key>HOST</key><string>127.0.0.1</string>
+    <key>TTS_ENGINE</key><string>kokoro</string>
+    <key>TTS_FALLBACK_ENGINE</key><string>kokoro-zh,voxcpm2</string>
+    <key>TTS_COMMERCIAL_ONLY</key><string>true</string>
+    <key>TTS_MODEL_PATH</key><string>onnx-community/Kokoro-82M-v1.0-ONNX</string>
+    <key>TTS_KOKORO_DTYPE</key><string>q4f16</string>
+    <key>TTS_KOKORO_SUPPORTS_CHINESE</key><string>false</string>
+    <key>TTS_DEFAULT_VOICE</key><string></string>
+    <key>TTS_KOKORO_ZH_SIDECAR_URL</key><string>http://127.0.0.1:$KOKORO_PORT</string>
+    <key>TTS_KOKORO_ZH_SIDECAR_TIMEOUT_MS</key><string>120000</string>
     <key>TTS_VOXCPM_SIDECAR_URL</key><string>http://127.0.0.1:$VOXCPM_PORT</string>
+    <key>TTS_VOXCPM_SIDECAR_TIMEOUT_MS</key><string>300000</string>
+    <key>TTS_ENABLE_CORS</key><string>false</string>
+    <key>HF_HOME</key><string>$HOME/.cache/tts-models</string>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -165,15 +217,17 @@ echo "Wrote plists to $LAUNCH_AGENTS_DIR"
 
 # ── Load ──────────────────────────────────────────────────────────────
 UID_NUM=$(id -u)
-for label in "$VOXCPM_LABEL" "$API_LABEL"; do
+for label in "$VOXCPM_LABEL" "$KOKORO_LABEL" "$API_LABEL"; do
   launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null || true
   launchctl bootstrap "gui/$UID_NUM" "$LAUNCH_AGENTS_DIR/$label.plist"
 done
 
 echo "Started. Waiting for the sidecar to come up (model load can take a minute)..."
 for _ in $(seq 1 60); do
-  if curl -sf "http://127.0.0.1:$VOXCPM_PORT/health" 2>/dev/null | grep -q '"model_loaded":true'; then
+  if curl -sf "http://127.0.0.1:$VOXCPM_PORT/health" 2>/dev/null | grep -q '"model_loaded":true' \
+    && curl -sf "http://127.0.0.1:$KOKORO_PORT/health" 2>/dev/null | grep -q '"model_loaded":true'; then
     echo "VoxCPM2 sidecar: ready."
+    echo "Kokoro v1.1-zh sidecar: ready."
     break
   fi
   sleep 2

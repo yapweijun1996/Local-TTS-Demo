@@ -7,6 +7,9 @@ export type TtsJobStatus = "queued" | "running" | "done" | "failed" | "cancelled
 export interface TtsJobRequest {
   text: string;
   engine: string;
+  requestedEngine?: string;
+  fallbackFrom?: string;
+  fallbackReason?: string;
   voice?: string;
   language?: string;
 }
@@ -30,6 +33,10 @@ export interface StoredTtsJob {
 export interface PublicTtsJob {
   id: string;
   status: TtsJobStatus;
+  engine: string;
+  requestedEngine: string;
+  fallbackFrom?: string;
+  fallbackReason?: string;
   completedChunks: number;
   totalChunks: number;
   progress: number;
@@ -46,6 +53,10 @@ export function publicJob(job: StoredTtsJob, queuePosition: number | null): Publ
   return {
     id: job.id,
     status: job.status,
+    engine: job.request.engine,
+    requestedEngine: job.request.requestedEngine ?? job.request.engine,
+    ...(job.request.fallbackFrom ? { fallbackFrom: job.request.fallbackFrom } : {}),
+    ...(job.request.fallbackReason ? { fallbackReason: job.request.fallbackReason } : {}),
     completedChunks: job.completedChunks,
     totalChunks: job.totalChunks,
     progress: job.totalChunks > 0 ? Math.round((job.completedChunks / job.totalChunks) * 100) : 0,

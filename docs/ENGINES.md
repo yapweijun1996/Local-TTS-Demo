@@ -31,7 +31,7 @@ Runs in `apps/web` (onnxruntime-web + transformers.js) or a CPU Node process.
 | 1 | **Kokoro-82M v1.0** | `kokoro-js` | Apache-2.0 | **86 MB** (q4f16) | ★★★★★ MOS 4.5 | 9 | 54+ |
 | 2 | **Piper TTS** | `piper-plus` | MIT | ~75 MB | ★★★ MOS ~3.5 | 30+ | 900+ |
 
-#### 1. Kokoro-82M v1.0 (default engine)
+#### 1. Kokoro-82M v1.0 (browser default engine)
 
 **Runtime:** `@huggingface/transformers` v4.x (wraps `onnxruntime-web`).
 **WebGPU:** ✅ with WASM fallback.
@@ -48,13 +48,29 @@ Dtype guide:
 Languages: American English, British English, Japanese, Mandarin Chinese,
 French, Spanish, Hindi, Italian, Brazilian Portuguese.
 
-**G2P notes:** EN/JP/ZH/KO/VI use misaki (MIT, GPL-free). ES/FR/HI/IT/PT
+**G2P notes:** EN/JP/ZH/KO/VI use misaki (Apache-2.0, GPL-free on the
+dictionary/native path). ES/FR/HI/IT/PT
 require espeak-ng fallback (GPL-v3 risk) — see [`LICENSING.md`](LICENSING.md).
+
+#### 1b. Kokoro-82M v1.1-zh (Node API Podcast sidecar)
+
+The production Podcast path uses the Apache-2.0 `hexgrad/Kokoro-82M-v1.1-zh`
+model through the Python pipeline and exposes `zf_*` voices for Mandarin;
+`zf_001` is the default. The Node process keeps the v1.0 ONNX engine for
+English, while the sidecar supplies the correct Chinese G2P and voice pack.
 
 **Known issues in browser:**
 - 510-token hard limit per call → use `TextSplitterStream` (kokoro-js v1.2.0+)
 - FP16/Q4 silent-chunk G2P failure on certain inputs — split-fallback workaround
   implemented in `apps/web/src/engines/kokoro.ts`
+- Node Podcast long-chunk protection: in-process Kokoro output is checked for
+  low-amplitude/all-zero PCM (`1e-4` floor); silent speech-bearing fragments are
+  recursively split and retried, while punctuation-only fragments are dropped.
+  The durable Job manager also rejects silent WAV chunks before persistence.
+- The durable API boundary defaults to 480 characters (`TTS_JOB_CHUNK_SIZE`),
+  instead of cutting every request at 120 characters. This preserves enough
+  sentence context for natural prosody; engine adapters retain their own safe
+  limits for sidecar calls.
 - Peak RAM 330–520 MB (Chrome task manager)
 
 **Latency (warm, 100 chars):**

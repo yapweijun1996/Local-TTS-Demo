@@ -39,6 +39,13 @@ Kokoro and Piper both depend on a grapheme-to-phoneme (G2P) step at runtime.
 | **Italian** | `i` | **espeak.EspeakG2P** | ✅ MANDATORY | ⚠️ YES |
 | **Portuguese** | `p` | **espeak.EspeakG2P** | ✅ MANDATORY | ⚠️ YES |
 
+The Python Kokoro package declares the English Misaki extra, so its environment
+may contain the optional `espeakng-loader` / `phonemizer-fork` packages. This
+sidecar deliberately passes a dictionary/rule `misaki.en.G2P(fallback=None)`
+callable for embedded English; normal Mandarin Podcast synthesis does not
+invoke the eSpeak fallback. If the Python environment is redistributed,
+review and preserve the applicable eSpeak/phonemizer license notices separately.
+
 ### English MVP — two GPL-free paths
 
 1. **`kokoro-js` with `fallback=None`:** misaki's 183k-word dictionary handles
@@ -68,7 +75,7 @@ core SDK. Similar to FFmpeg's codec model.
 
 | Phonemizer | License | Risk |
 |-----------|---------|------|
-| `misaki` (Kokoro English) | MIT | ✅ clean |
+| `misaki` (Kokoro English) | Apache-2.0 | ✅ clean |
 | CMU dict + NRL rules (HeadTTS) | BSD-like + Public Domain | ✅ clean |
 | `espeak-ng` (Piper; Kokoro multilingual fallback) | **GPL-v3** | ⚠️ evaluate |
 
@@ -98,9 +105,12 @@ Every engine ships `engines/<id>/license.json`:
 ## Current engine status
 | Engine | Code | Weights | Voices | Commercial | Notes |
 |--------|------|---------|--------|-----------|-------|
-| Kokoro ONNX | Apache-2.0 | Apache-2.0 | bundled | ✅ | default; verify misaki vs espeak-ng per language |
+| Kokoro ONNX | Apache-2.0 | Apache-2.0 | bundled | ✅ | English default; Mandarin is routed to the official Kokoro v1.1-zh sidecar |
+| Kokoro v1.1-zh sidecar | Apache-2.0 | Apache-2.0 | `zf_*` model voices | ✅ | native Mandarin G2P; embedded English uses Misaki dictionary/rules with eSpeak fallback disabled; keep Apache notices when redistributing |
+| VoxCPM2 sidecar | Apache-2.0 | Apache-2.0 | model default | ✅ | commercial-safe zh/en fallback; keep Apache notices when redistributing |
 | Piper ONNX | MIT | MIT | **per-voice varies** | ✅ (code) | each voice in `rhasspy/piper-voices` has its own license (CC0 / CC BY / etc.) — build one metadata entry **per voice** |
 | Chatterbox | MIT | MIT | — | ✅ | future; PyTorch sidecar, not in-process |
+| macOS `say` | System/Apple terms | System/Apple terms | installed system voices | ❌ | development-only fallback; excluded when `TTS_COMMERCIAL_ONLY=true` |
 
 > Piper **voices** are the catch: the Piper code is MIT, but individual voices
 > carry different licenses (some require attribution). Verify and record each voice

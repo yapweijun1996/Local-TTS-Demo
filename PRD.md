@@ -250,7 +250,7 @@ check, start API.
 services:
   tts-api:
     build: .
-    ports: [ "3000:3000" ]
+    ports: [ "6700:6700" ]
     environment:
       TTS_ENGINE: kokoro
       TTS_MODEL_PATH: /app/models/kokoro
@@ -284,7 +284,7 @@ tts-platform/
   Kokoro adapter, validation, audio response. *Done when speech generates over HTTP,
   no cloud.*
 - **Phase 3 — Docker:** Dockerfile, docker-compose, env config, health check, model
-  volume. *Done when `docker compose up` serves the API at `http://localhost:3000`.*
+  volume. *Done when `docker compose up` serves the API at `http://localhost:6700`.*
 - **Phase 4 — Engine Expansion:** Piper adapter, optional Chatterbox sidecar, engine
   switching config. *Done when engine switches without rewriting API or UI.*
 
@@ -295,7 +295,7 @@ tts-platform/
   long-text reject, invalid-engine reject.
 - **Browser:** app loads, text input works, generate button state changes, audio
   player appears after generation, error appears when model fails.
-- **Docker:** `docker compose up --build` then `curl http://localhost:3000/health`
+- **Docker:** `docker compose up --build` then `curl http://localhost:6700/health`
   → `{ "status": "ok" }`.
 
 ## 20. Logging Rules

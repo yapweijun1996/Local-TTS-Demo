@@ -16,8 +16,11 @@ import { registry } from "./engines/registry.js";
 import { createKokoroAdapter, KOKORO_LICENSE } from "./engines/kokoro.js";
 import { createQwenSidecarAdapter, QWEN3_TTS_LICENSE } from "./engines/qwenSidecar.js";
 import { createVoxcpmSidecarAdapter, VOXCPM2_LICENSE } from "./engines/voxcpmSidecar.js";
+import { createKokoroZhSidecarAdapter, KOKORO_ZH_LICENSE } from "./engines/kokoroZhSidecar.js";
+import { createMacosSayAdapter, MACOS_SAY_LICENSE } from "./engines/macosSay.js";
 import { TtsJobStore } from "./jobs/jobStore.js";
 import { TtsJobManager } from "./jobs/jobManager.js";
+import { selectEngine } from "./engineSelection.js";
 
 const server = Fastify({
   logger: config.logText ? { level: "info" } : { level: "warn" },
@@ -30,7 +33,10 @@ if (config.enableCors) {
 
 // ── Engine registry ───────────────────────────────────────────────────
 registry.register(
-  createKokoroAdapter({ model: config.modelPath }),
+  createKokoroAdapter({
+    model: config.modelPath,
+    dtype: config.kokoroDtype,
+  }),
   KOKORO_LICENSE,
 );
 
@@ -62,6 +68,27 @@ if (config.voxcpmSidecarUrl) {
   );
 }
 
+// Kokoro v1.1-zh Python sidecar — the in-process kokoro-js package currently
+// ships an English-only voice catalog, so Mandarin must use the official
+// Python pipeline with misaki[zh] and zf_* voices.
+if (config.kokoroZhSidecarUrl) {
+  registry.register(
+    createKokoroZhSidecarAdapter({
+      baseUrl: config.kokoroZhSidecarUrl,
+      timeoutMs: config.kokoroZhSidecarTimeoutMs,
+      chunkSize: 360,
+    }),
+    KOKORO_ZH_LICENSE,
+  );
+}
+
+// macOS system voice is available only as an explicit hobby/development
+// option. Production defaults are commercial-only, so Apple system voices
+// are not registered and cannot be selected or used as a fallback.
+if (process.platform === "darwin" && !config.commercialOnly) {
+  registry.register(createMacosSayAdapter(), MACOS_SAY_LICENSE);
+}
+
 // Fire-and-forget: load engines in the background so the server starts fast.
 // /health reports "degraded" until the default engine is available.
 const loadPromise = registry.loadAll((msg) => server.log.info(msg));
@@ -70,7 +97,9 @@ const jobStore = new TtsJobStore(resolve(projectRoot, config.jobDataDir));
 const jobManager = new TtsJobManager({
   store: jobStore,
   resolveEngine: (id) => registry.get(id)?.engine,
-  chunkSize: 120,
+  // Keep enough context for natural prosody. Sidecar adapters still apply
+  // their own engine-specific split limits after this durable boundary.
+  chunkSize: config.jobChunkSize,
   resultTtlMs: config.jobResultTtlMs,
   maxDiskBytes: config.jobMaxDiskBytes,
 });
@@ -81,23 +110,52 @@ jobCleanupTimer.unref();
 
 // ── GET /health ───────────────────────────────────────────────────────
 server.get("/health", async (_request, reply) => {
-  const entry = registry.get(config.engine);
+  let selection;
+  try {
+    selection = selectEngine({
+      requestedEngine: config.engine,
+      fallbackEngine: config.fallbackEngine,
+      supportsChinese: config.kokoroSupportsChinese,
+      getEntry: (id) => registry.get(id),
+    });
+  } catch {
+    selection = { engineId: config.engine, requestedEngine: config.engine };
+  }
+  const entry = registry.get(selection.engineId);
   const modelLoaded = entry?.status === "available";
   return reply.send({
     status: modelLoaded ? "ok" : "degraded",
-    engine: config.engine,
+    engine: selection.engineId,
+    requestedEngine: config.engine,
+    ...(selection.fallbackFrom ? { fallbackFrom: selection.fallbackFrom, fallbackReason: selection.fallbackReason } : {}),
     modelLoaded,
   });
 });
 
 // ── GET /api/engines ──────────────────────────────────────────────────
 server.get("/api/engines", async (_request, reply) => {
-  return reply.send({ engines: registry.listEngines() });
+  return reply.send({
+    engines: registry.listEngines(),
+    defaultEngine: config.engine,
+    fallbackEngine: config.fallbackEngine,
+    commercialOnly: config.commercialOnly,
+  });
 });
 
 // ── GET /api/voices ───────────────────────────────────────────────────
 server.get("/api/voices", async (request, reply) => {
-  const engineId = (request.query as Record<string, string>).engine ?? config.engine;
+  const requestedEngine = (request.query as Record<string, string>).engine;
+  let engineId = requestedEngine ?? config.engine;
+  if (!requestedEngine) {
+    try {
+      engineId = selectEngine({
+        requestedEngine: config.engine,
+        fallbackEngine: config.fallbackEngine,
+        supportsChinese: config.kokoroSupportsChinese,
+        getEntry: (id) => registry.get(id),
+      }).engineId;
+    } catch { /* report the configured engine below */ }
+  }
 
   if (!registry.has(engineId)) {
     return reply.status(404).send({
@@ -141,6 +199,26 @@ interface TtsRequestBody {
   language?: string;
 }
 
+function chooseRequestEngine(body: TtsRequestBody) {
+  return selectEngine({
+    requestedEngine: body.engine ?? config.engine,
+    fallbackEngine: config.fallbackEngine,
+    supportsChinese: config.kokoroSupportsChinese,
+    text: body.text ?? "",
+    language: body.language ?? "",
+    getEntry: (id) => registry.get(id),
+  });
+}
+
+function rejectIncompatibleFallbackVoice(body: TtsRequestBody, selection: { fallbackFrom?: string; engineId: string }) {
+  // Kokoro voices are named af_*/am_*/bf_*/bm_*. Passing one into VoxCPM2
+  // produces a misleading VOICE_NOT_FOUND later in the worker. Ask callers to
+  // use the fallback engine's default voice instead.
+  if (selection.fallbackFrom && selection.engineId === "voxcpm2" && body.voice && /^(?:af|am|bf|bm)_/i.test(body.voice)) {
+    throw new TtsError("VOICE_NOT_FOUND", `Voice "${body.voice}" belongs to Kokoro and is not compatible with the selected fallback engine.`);
+  }
+}
+
 function jobError(e: unknown): ReturnType<TtsError["toJSON"]> {
   if (e instanceof TtsError) return e.toJSON();
   return new TtsError(
@@ -153,10 +231,20 @@ function jobError(e: unknown): ReturnType<TtsError["toJSON"]> {
 // quickly, poll this resource, then receive the WAV from a short final GET.
 server.post("/api/tts/jobs", async (request, reply) => {
   const body = (request.body ?? {}) as TtsRequestBody;
-  const engineId = body.engine ?? config.engine;
-  const entry = registry.get(engineId);
-  if (!entry) return reply.status(404).send(new TtsError("ENGINE_NOT_FOUND", `Engine "${engineId}" is not registered.`).toJSON());
-  if (entry.status !== "available") return reply.status(503).send(new TtsError("MODEL_LOAD_FAILED", `Engine "${engineId}" is not available yet.`).toJSON());
+  let selection;
+  try {
+    selection = chooseRequestEngine(body);
+  } catch (e) {
+    const code = (e as { code?: TtsErrorCode }).code;
+    const error = new TtsError(code === "ENGINE_NOT_FOUND" ? "ENGINE_NOT_FOUND" : "MODEL_LOAD_FAILED", e instanceof Error ? e.message : "Engine is not available.");
+    return reply.status(STATUS_BY_CODE[error.code]).send(error.toJSON());
+  }
+  const entry = registry.get(selection.engineId);
+  if (!entry || entry.status !== "available") return reply.status(503).send(new TtsError("MODEL_LOAD_FAILED", `Engine "${selection.engineId}" is not available yet.`).toJSON());
+  try { rejectIncompatibleFallbackVoice(body, selection); } catch (e) {
+    const error = e instanceof TtsError ? e : new TtsError("VOICE_NOT_FOUND", "Voice is not compatible with the fallback engine.");
+    return reply.status(404).send(error.toJSON());
+  }
   try {
     validateText(body.text ?? "", { maxLength: config.maxTextLength });
   } catch (e) {
@@ -167,7 +255,9 @@ server.post("/api/tts/jobs", async (request, reply) => {
 
   const job = await jobManager.submit({
     text: body.text!.trim(),
-    engine: engineId,
+    engine: selection.engineId,
+    requestedEngine: selection.requestedEngine,
+    ...(selection.fallbackFrom ? { fallbackFrom: selection.fallbackFrom, fallbackReason: selection.fallbackReason } : {}),
     ...(body.voice ? { voice: body.voice } : {}),
     ...(body.language ? { language: body.language } : {}),
   });
@@ -189,18 +279,19 @@ server.delete<{ Params: { id: string } }>("/api/tts/jobs/:id", async (request, r
 
 server.post("/api/tts", async (request, reply) => {
   const body = (request.body ?? {}) as TtsRequestBody;
-  const engineId = body.engine ?? config.engine;
-
-  const entry = registry.get(engineId);
-  if (!entry) {
-    return reply.status(404).send(
-      new TtsError("ENGINE_NOT_FOUND", `Engine "${engineId}" is not registered.`).toJSON(),
-    );
+  let selection;
+  try {
+    selection = chooseRequestEngine(body);
+  } catch (e) {
+    const code = (e as { code?: TtsErrorCode }).code;
+    const error = new TtsError(code === "ENGINE_NOT_FOUND" ? "ENGINE_NOT_FOUND" : "MODEL_LOAD_FAILED", e instanceof Error ? e.message : "Engine is not available.");
+    return reply.status(STATUS_BY_CODE[error.code]).send(error.toJSON());
   }
-  if (entry.status !== "available") {
-    return reply.status(503).send(
-      new TtsError("MODEL_LOAD_FAILED", `Engine "${engineId}" is not available yet.`).toJSON(),
-    );
+  const entry = registry.get(selection.engineId);
+  if (!entry || entry.status !== "available") return reply.status(503).send(new TtsError("MODEL_LOAD_FAILED", `Engine "${selection.engineId}" is not available yet.`).toJSON());
+  try { rejectIncompatibleFallbackVoice(body, selection); } catch (e) {
+    const error = e instanceof TtsError ? e : new TtsError("VOICE_NOT_FOUND", "Voice is not compatible with the fallback engine.");
+    return reply.status(404).send(error.toJSON());
   }
 
   try {

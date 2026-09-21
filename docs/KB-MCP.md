@@ -64,7 +64,8 @@ Summary of usable engines for this project:
 
 | # | Engine | License | Size | Languages | Status |
 |---|--------|---------|------|-----------|--------|
-| 1 | Kokoro-82M v1.0 (`kokoro-js`) | Apache-2.0 | 86 MB (q4f16) | 9 | ✅ Integrated (default) |
+| 1 | Kokoro-82M v1.0 (`kokoro-js`) | Apache-2.0 | 86 MB (q4f16) | 9 | ✅ Integrated (browser default) |
+| 1b | Kokoro-82M v1.1-zh (Python sidecar) | Apache-2.0 | ~330 MB | 2 | ✅ Integrated (Podcast Mandarin route) |
 | 2 | Piper (`piper-plus`) | MIT | ~75 MB | 30+ / 900+ voices | ✅ Integrated (migrate from archived upstream) |
 | 3 | Supertonic v3 | OpenRAIL-M | 404 MB | 31 | 🔜 Can add — multilingual priority |
 | 4 | KittenTTS nano | Apache-2.0 | 25 MB | 1 (EN) | 🔜 Can add — low-footprint only |
@@ -117,4 +118,4 @@ apps/web/src/
 
 **P2-2 (Engine registry)** — `EngineRegistry` singleton, `createKokoroAdapter()` (onnxruntime-node via kokoro-js), `GET /api/engines`, `GET /api/voices`, health reports `degraded`/`ok` based on actual engine status. Smoke-tested all endpoints.
 
-**Build status:** 45 tests passing, 3 packages typecheck clean, API boots and responds on `:3000`.
+**Build status:** 96 tests passing, 3 packages typecheck clean, API boots and responds on `:6700`.

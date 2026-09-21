@@ -5,14 +5,15 @@
  * has its own adapter (apps/web/src/engines/kokoro.ts) over onnxruntime-web;
  * this one targets onnxruntime-node and runs inside the Fastify process.
  *
- * Model: onnx-community/Kokoro-82M-v1.0-ONNX (~326 MB fp32, ~163 MB fp16)
+ * Model: onnx-community/Kokoro-82M-v1.0-ONNX (English)
  * License: Apache-2.0
- * G2P: misaki English dict (Apache 2.0) — no espeak-ng, no GPL risk.
+ * G2P: misaki English dict; Mandarin is routed to the Kokoro v1.1-zh Python
+ * sidecar so the production path uses the correct Chinese G2P and voices.
  */
 
 import { KokoroTTS, type GenerateOptions } from "kokoro-js";
 import type { TtsEngine, TtsInput, TtsOutput, TtsVoice, EngineLicenseMeta } from "@local-tts/core";
-import { validateText, segmentText, concatFloat32, encodeWav } from "@local-tts/core";
+import { TtsError, validateText, segmentText, concatFloat32, encodeWav } from "@local-tts/core";
 
 // ── License metadata ──────────────────────────────────────────────────
 export const KOKORO_LICENSE: EngineLicenseMeta = {
@@ -23,19 +24,61 @@ export const KOKORO_LICENSE: EngineLicenseMeta = {
   requiresAttribution: false,
   sourceUrl: "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX",
   verifiedAt: "2026-06-07",
-  notes: "Weights Apache-2.0. G2P via misaki (MIT) for EN; espeak-ng only if multilingual fallback enabled.",
+  notes: "Apache-2.0 English ONNX weights; Mandarin uses the separately registered Kokoro v1.1-zh sidecar.",
 };
 
 // ── Options ───────────────────────────────────────────────────────────
 export interface KokoroAdapterOptions {
   /** HuggingFace model id or local path. */
   model: string;
-  /** "fp32" | "fp16" | "q4" — fp32 recommended for server quality. */
-  dtype?: "fp32" | "fp16" | "q4";
+  /** kokoro-js quantization; q4f16 is the practical CPU default. */
+  dtype?: "fp32" | "fp16" | "q8" | "q4" | "q4f16";
   /** Max chars per request (after normalization). */
   maxTextLength?: number;
   /** Sentence-chunk size for segmentation (0 = disable). */
   chunkSize?: number;
+}
+
+/** Samples below this level are treated as an encoder/model silence failure. */
+export const KOKORO_SILENT_SAMPLE_THRESHOLD = 1e-4;
+/** Keep recovery bounded while still allowing a 120-character request to split twice. */
+export const KOKORO_MAX_SILENT_RECOVERY_DEPTH = 4;
+
+export function hasAudibleSamples(audio: Float32Array, threshold = KOKORO_SILENT_SAMPLE_THRESHOLD): boolean {
+  for (const sample of audio) {
+    if (Math.abs(sample) > threshold) return true;
+  }
+  return false;
+}
+
+export function hasSpeechBearingText(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(String(text || ''));
+}
+
+/**
+ * Kokoro can deterministically return an all-zero waveform for some otherwise
+ * valid English fragments. Retrying the same fragment reproduces the fault;
+ * splitting it at a smaller boundary makes the model emit speech. Keep this
+ * helper pure so the recovery policy is covered without loading the 82M model.
+ */
+export function splitSilentAudioText(text: string): string[] {
+  const input = String(text || '').trim();
+  if (input.length < 2) return [];
+  const maxChars = Math.max(16, Math.ceil(input.length / 2));
+  const segmented = segmentText(input, maxChars);
+  if (segmented.length > 1) return segmented;
+
+  const midpoint = Math.floor(input.length / 2);
+  const before = input.lastIndexOf(" ", midpoint);
+  const after = input.indexOf(" ", midpoint);
+  const cut = before > 0 ? before : after > 0 ? after : midpoint;
+  if (cut <= 0 || cut >= input.length) return [input.slice(0, midpoint), input.slice(midpoint)].filter(Boolean);
+  return [input.slice(0, cut).trim(), input.slice(cut).trim()].filter(Boolean);
+}
+
+interface SynthesizedPcm {
+  audio: Float32Array;
+  sampleRate: number;
 }
 
 /**
@@ -50,6 +93,7 @@ export function createKokoroAdapter(opts: KokoroAdapterOptions): TtsEngine {
   const chunkSize = opts.chunkSize ?? 480;
 
   let tts: KokoroTTS | null = null;
+  let loading: Promise<void> | null = null;
 
   return {
     id: "kokoro",
@@ -57,10 +101,14 @@ export function createKokoroAdapter(opts: KokoroAdapterOptions): TtsEngine {
 
     async load() {
       if (tts) return;
-      tts = await KokoroTTS.from_pretrained(model, {
-        dtype,
-        device: "cpu", // Node → onnxruntime-node CPU backend
-      });
+      if (loading) return loading;
+      loading = (async () => {
+        tts = await KokoroTTS.from_pretrained(model, {
+          dtype,
+          device: "cpu", // Node → onnxruntime-node CPU backend
+        });
+      })();
+      try { await loading; } finally { loading = null; }
     },
 
     async listVoices(): Promise<TtsVoice[]> {
@@ -87,24 +135,29 @@ export function createKokoroAdapter(opts: KokoroAdapterOptions): TtsEngine {
       // 3. Synthesize
       const voice = input.voice as string | undefined;
       if (chunks.length === 1) {
-        const raw = await tts.generate(chunks[0]!, { voice: voice as GenerateOptions["voice"] });
+        const rendered = await synthesizeWithSilentRecovery(chunks[0]!, voice, tts, 0);
         return {
-          audioBuffer: raw.toWav(),
+          // Keep the single-chunk path on the same canonical 16-bit PCM
+          // encoder as the multi-chunk path. kokoro-js raw.toWav() can emit
+          // a 32-bit WAV, while the job manager deliberately decodes only
+          // 16-bit PCM before concatenating engine output.
+          audioBuffer: encodeWav(rendered.audio, { sampleRate: rendered.sampleRate }),
           mimeType: "audio/wav",
-          durationMs: (raw.audio.length / raw.sampling_rate) * 1000,
+          durationMs: (rendered.audio.length / rendered.sampleRate) * 1000,
         };
       }
 
       // Multi-chunk: concat PCM with 60ms silence gaps
       const parts: Float32Array[] = [];
       let sampleRate = 24000;
+      let renderedPartCount = 0;
       for (let i = 0; i < chunks.length; i++) {
-        const raw = await tts.generate(chunks[i]!, { voice: voice as GenerateOptions["voice"] });
-        sampleRate = raw.sampling_rate;
-        parts.push(raw.audio);
-        if (i < chunks.length - 1) {
-          parts.push(new Float32Array(Math.round(sampleRate * 0.06)));
-        }
+        const rendered = await synthesizeWithSilentRecovery(chunks[i]!, voice, tts, 0);
+        sampleRate = rendered.sampleRate;
+        if (rendered.audio.length === 0) continue;
+        if (renderedPartCount > 0) parts.push(new Float32Array(Math.round(sampleRate * 0.06)));
+        parts.push(rendered.audio);
+        renderedPartCount += 1;
       }
       const pcm = concatFloat32(parts);
       return {
@@ -114,4 +167,37 @@ export function createKokoroAdapter(opts: KokoroAdapterOptions): TtsEngine {
       };
     },
   };
+}
+
+async function synthesizeWithSilentRecovery(
+  text: string,
+  voice: string | undefined,
+  tts: KokoroTTS,
+  depth: number,
+): Promise<SynthesizedPcm> {
+  const raw = await tts.generate(text, { voice: voice as GenerateOptions["voice"] });
+  const sampleRate = raw.sampling_rate;
+  if (hasAudibleSamples(raw.audio)) return { audio: raw.audio, sampleRate };
+
+  // Punctuation-only fragments are formatting, not speech. Dropping their
+  // silent waveform avoids creating a long mute gap around a closing quote.
+  if (!hasSpeechBearingText(text)) return { audio: new Float32Array(0), sampleRate };
+
+  const recoveryChunks = splitSilentAudioText(text);
+  if (depth >= KOKORO_MAX_SILENT_RECOVERY_DEPTH || recoveryChunks.length < 2) {
+    throw new TtsError(
+      "GENERATION_FAILED",
+      "Kokoro returned silent audio for a speech-bearing text chunk.",
+      { textLength: text.length, recoveryDepth: depth },
+    );
+  }
+
+  const parts: Float32Array[] = [];
+  for (const recoveryChunk of recoveryChunks) {
+    const rendered = await synthesizeWithSilentRecovery(recoveryChunk, voice, tts, depth + 1);
+    if (rendered.audio.length === 0) continue;
+    if (parts.length > 0) parts.push(new Float32Array(Math.round(sampleRate * 0.06)));
+    parts.push(rendered.audio);
+  }
+  return { audio: concatFloat32(parts), sampleRate };
 }

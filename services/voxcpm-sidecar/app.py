@@ -30,6 +30,7 @@ import io
 import os
 import re
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -41,6 +42,9 @@ MODEL_ID = os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM2")
 MAX_TEXT_LENGTH = int(os.environ.get("VOXCPM_MAX_TEXT_LENGTH", "3000"))
 MAX_AUDIO_TOKENS = int(os.environ.get("VOXCPM_MAX_AUDIO_TOKENS", "1200"))
 AUDIO_TOKENS_PER_CHAR = int(os.environ.get("VOXCPM_AUDIO_TOKENS_PER_CHAR", "8"))
+DEVICE = os.environ.get("VOXCPM_DEVICE", "auto").strip() or "auto"
+OPTIMIZE = os.environ.get("VOXCPM_OPTIMIZE", "false").strip().lower() in {"1", "true", "yes", "on"}
+INFERENCE_TIMESTEPS = int(os.environ.get("VOXCPM_INFERENCE_TIMESTEPS", "10"))
 JOB_CACHE_DIR = os.environ.get(
     "VOXCPM_JOB_CACHE_DIR",
     os.path.abspath(os.path.join(os.path.dirname(__file__), "../../data/tts-jobs/sidecar-cache")),
@@ -77,7 +81,7 @@ VOICE_CATALOG: dict[str, dict[str, str]] = {
     },
 }
 
-_state: dict[str, Any] = {"model": None, "error": None}
+_state: dict[str, Any] = {"model": None, "error": None, "last_generation_ms": None}
 _generate_lock = threading.Lock()  # one generation at a time (single GPU/MPS context)
 
 
@@ -85,7 +89,12 @@ def _load_model() -> None:
     try:
         from voxcpm import VoxCPM
 
-        _state["model"] = VoxCPM.from_pretrained(MODEL_ID, load_denoiser=False)
+        _state["model"] = VoxCPM.from_pretrained(
+            MODEL_ID,
+            load_denoiser=False,
+            optimize=OPTIMIZE,
+            device=DEVICE,
+        )
     except Exception as e:  # surfaced via /health, never crashes the server
         _state["error"] = f"{type(e).__name__}: {e}"
 
@@ -111,7 +120,7 @@ class SynthesizeRequest(BaseModel):
     voice_description: Optional[str] = None
     reference_wav_path: Optional[str] = None
     cfg_value: float = 2.0
-    inference_timesteps: int = 10
+    inference_timesteps: int = INFERENCE_TIMESTEPS
     job_id: Optional[str] = None
     chunk_index: Optional[int] = None
 
@@ -136,7 +145,17 @@ def _wav_response(wav_bytes: bytes, sample_rate: int, duration_ms: int) -> Respo
 def health() -> dict[str, Any]:
     loaded = _state["model"] is not None
     status = "ok" if loaded else ("error" if _state["error"] else "loading")
-    return {"status": status, "model": MODEL_ID, "model_loaded": loaded, "error": _state["error"]}
+    model = _state["model"]
+    runtime_device = getattr(getattr(model, "tts_model", None), "device", None) if model else None
+    return {
+        "status": status,
+        "model": MODEL_ID,
+        "model_loaded": loaded,
+        "device": runtime_device or DEVICE,
+        "optimize": OPTIMIZE,
+        "last_generation_ms": _state["last_generation_ms"],
+        "error": _state["error"],
+    }
 
 
 @app.get("/voices")
@@ -181,6 +200,8 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
     max_audio_tokens = min(MAX_AUDIO_TOKENS, max(128, len(text) * AUDIO_TOKENS_PER_CHAR))
     cache_path = _cached_chunk_path(req)
 
+    started = time.monotonic()
+    print(f"[voxcpm] synthesize start job_id={req.job_id or '-'} chunk={req.chunk_index if req.chunk_index is not None else '-'} chars={len(text)} max_audio_tokens={max_audio_tokens}", flush=True)
     try:
         with _generate_lock:
             if cache_path and os.path.isfile(cache_path):
@@ -195,11 +216,13 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
                 text=prompt_text,
                 reference_wav_path=req.reference_wav_path,
                 cfg_value=req.cfg_value,
-                inference_timesteps=req.inference_timesteps,
+                inference_timesteps=max(1, req.inference_timesteps or INFERENCE_TIMESTEPS),
                 max_len=max_audio_tokens,
                 retry_badcase=False,
             )
     except Exception as e:
+        _state["last_generation_ms"] = int((time.monotonic() - started) * 1000)
+        print(f"[voxcpm] synthesize failed duration_ms={_state['last_generation_ms']} error={type(e).__name__}: {e}", flush=True)
         return _error(500, "GENERATION_FAILED", f"{type(e).__name__}: {e}")
 
     sample_rate = model.tts_model.sample_rate
@@ -215,4 +238,6 @@ def synthesize(req: SynthesizeRequest):  # sync def -> FastAPI runs it in a work
         with open(temp_path, "wb") as cached_file:
             cached_file.write(wav_bytes)
         os.replace(temp_path, cache_path)
+    _state["last_generation_ms"] = int((time.monotonic() - started) * 1000)
+    print(f"[voxcpm] synthesize done duration_ms={_state['last_generation_ms']} audio_bytes={len(wav_bytes)}", flush=True)
     return _wav_response(wav_bytes, sample_rate, duration_ms)

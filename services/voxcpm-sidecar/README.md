@@ -43,7 +43,7 @@ curl -X POST http://localhost:8200/synthesize \
 
 ```bash
 TTS_VOXCPM_SIDECAR_URL=http://localhost:8200 pnpm --filter @local-tts/api dev
-curl -X POST http://localhost:3000/api/tts \
+curl -X POST http://localhost:6700/api/tts \
   -H 'content-type: application/json' \
   -d '{"engine": "voxcpm2", "text": "Hello 你好"}' -o out.wav
 ```
@@ -54,6 +54,9 @@ curl -X POST http://localhost:3000/api/tts \
 |-----|---------|-------|
 | `VOXCPM_MODEL` | `openbmb/VoxCPM2` | HF model id |
 | `VOXCPM_MAX_TEXT_LENGTH` | `3000` | Keep in sync with API `TTS_MAX_TEXT_LENGTH` |
+| `VOXCPM_DEVICE` | `auto` | Runtime device; auto prefers CUDA, then MPS, then CPU |
+| `VOXCPM_OPTIMIZE` | `false` | Keep disabled on the Mac MPS service unless a warm-up/compile benchmark passes |
+| `VOXCPM_INFERENCE_TIMESTEPS` | `10` | Diffusion steps; lower values trade quality for latency |
 | `VOXCPM_DEFAULT_VOICE_DESC` | (approved elder-male prompt) | Override only for experimentation |
 | `VOXCPM_JOB_CACHE_DIR` | `../../data/tts-jobs/sidecar-cache` | Idempotent per-job chunk cache used for restart recovery |
 

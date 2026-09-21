@@ -24,6 +24,7 @@ import type {
   TtsErrorCode,
 } from "@local-tts/core";
 import { TtsError, segmentText, decodeWav, concatFloat32, encodeWav } from "@local-tts/core";
+import { deriveSubchunkCacheJobId } from "./sidecarCacheIdentity.js";
 
 export const VOXCPM2_LICENSE: EngineLicenseMeta = {
   engine: "voxcpm2",
@@ -113,15 +114,19 @@ export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngin
     name: "VoxCPM2 (sidecar)",
 
     /**
-     * "Loaded" = sidecar reachable. Model warm-up continues inside the
-     * sidecar; synthesize() surfaces MODEL_LOAD_FAILED (503) until it
-     * finishes, which keeps registry status accurate without blocking boot
-     * for a multi-minute model download.
+     * Require the model itself to be ready, not merely the HTTP port. The
+     * sidecar deliberately answers /health while it is still loading; marking
+     * that state as available would make engine selection send a durable job
+     * into a model that can only return 503 (or appear to hang behind MPS).
      */
     async load(): Promise<void> {
       const res = await request("/health");
       if (!res.ok) {
         throw new Error(`VoxCPM2 sidecar /health returned HTTP ${res.status}.`);
+      }
+      const body = (await res.json().catch(() => null)) as { model_loaded?: boolean; error?: string } | null;
+      if (body?.model_loaded !== true) {
+        throw new Error(body?.error || "VoxCPM2 sidecar model is still loading.");
       }
     },
 
@@ -156,12 +161,13 @@ export function createVoxcpmSidecarAdapter(opts: VoxcpmSidecarOptions): TtsEngin
       // engines that only ever return a finished WAV per call.
       const parts: Float32Array[] = [];
       let sampleRate = 48000;
+      const cacheJobId = deriveSubchunkCacheJobId(input.jobId, input.chunkIndex);
       for (let i = 0; i < chunks.length; i++) {
         const { audioBuffer } = await synthesizeOneChunk(
           chunks[i]!,
           input.voice,
-          input.jobId,
-          input.chunkIndex === undefined ? undefined : input.chunkIndex + i,
+          cacheJobId,
+          input.chunkIndex === undefined ? undefined : i,
         );
         const decoded = decodeWav(audioBuffer);
         sampleRate = decoded.sampleRate || sampleRate;

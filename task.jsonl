@@ -21,7 +21,7 @@
 {"id":"P2-8","phase":2,"title":"API tests (health/voices/engines/tts + rejection cases)","status":"todo","deps":["P2-7"],"acceptance":"all PRD §19.2 cases pass"}
 {"id":"P3-1","phase":3,"title":"Dockerfile (node:20-slim): install deps, copy app, expose port, start API","status":"todo","deps":["P2-6"],"acceptance":"image builds; container starts API"}
 {"id":"P3-2","phase":3,"title":"Docker HEALTHCHECK calling /health","status":"todo","deps":["P3-1"],"acceptance":"container reports healthy after model load"}
-{"id":"P3-3","phase":3,"title":"docker-compose.yml: ports, env, models volume (output volume optional/off by default)","status":"todo","deps":["P3-1"],"acceptance":"docker compose up --build serves http://localhost:3000; models mountable"}
+{"id":"P3-3","phase":3,"title":"docker-compose.yml: ports, env, models volume (output volume optional/off by default)","status":"done","deps":["P3-1"],"acceptance":"docker compose up --build serves http://localhost:6700; models mountable"}
 {"id":"P3-4","phase":3,"title":"Optional model preloading + setup script for model download","status":"todo","deps":["P3-3"],"acceptance":"first run can preload or mount local models; documented in README"}
 {"id":"P3-5","phase":3,"title":"Docker smoke test: compose up then curl /health == {status:ok}","status":"todo","deps":["P3-2"],"acceptance":"PRD §19.4 passes"}
 {"id":"P4-1","phase":4,"title":"Piper ONNX Node adapter + per-voice license.json metadata","status":"todo","deps":["P2-2"],"acceptance":"engine switch to piper works; each voice has verified license metadata"}

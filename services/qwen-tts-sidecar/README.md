@@ -34,7 +34,7 @@ curl -X POST http://localhost:8100/synthesize \
 
 ```bash
 TTS_SIDECAR_URL=http://localhost:8100 pnpm --filter @local-tts/api dev
-curl -X POST http://localhost:3000/api/tts \
+curl -X POST http://localhost:6700/api/tts \
   -H 'content-type: application/json' \
   -d '{"engine": "qwen3-tts", "text": "Hello 你好", "voice": "serena"}' -o out.wav
 ```

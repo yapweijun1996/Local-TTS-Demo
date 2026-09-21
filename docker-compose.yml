@@ -1,0 +1,26 @@
+services:
+  api:
+    image: local-tts-demo-api:local
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "6700:6700"
+    environment:
+      NODE_ENV: production
+      PORT: "6700"
+      TTS_MODEL_PATH: onnx-community/Kokoro-82M-v1.0-ONNX
+      TTS_JOB_DATA_DIR: /app/data/tts-jobs
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      - tts-data:/app/data
+    # Restore the API after Docker Desktop or macOS restarts.
+    restart: always
+
+volumes:
+  hf-cache:
+    name: local-tts-demo-hf-cache
+    external: true
+  tts-data:
+    name: local-tts-demo-data
+    external: true

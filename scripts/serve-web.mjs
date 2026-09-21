@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const webRoot = resolve(process.env.TTS_WEB_ROOT ?? join(projectRoot, "apps/web/dist"));
-const apiOrigin = new URL(process.env.TTS_API_ORIGIN ?? "http://127.0.0.1:6701");
+const apiOrigin = new URL(process.env.TTS_API_ORIGIN ?? "http://127.0.0.1:6700");
 const host = process.env.HOST ?? "127.0.0.1";
-const port = Number(process.env.PORT ?? 6700);
+const port = Number(process.env.PORT ?? 6702);
 
 const MIME = {
   ".css": "text/css; charset=utf-8",

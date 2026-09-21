@@ -1,6 +1,6 @@
 # HTTP API Reference
 
-Base URL (default): `http://localhost:3000`. No authentication in MVP. No API keys.
+Base URL (default): `http://localhost:6700`. No authentication in MVP. No API keys.
 All errors return JSON in the [error format](#error-format).
 
 ## `POST /api/tts`
@@ -28,7 +28,7 @@ Generate speech from text. Returns an audio file (binary).
 `MODEL_LOAD_FAILED`, `GENERATION_FAILED`, `UNSUPPORTED_FORMAT`.
 
 ```bash
-curl -X POST http://localhost:3000/api/tts \
+curl -X POST http://localhost:6700/api/tts \
   -H 'Content-Type: application/json' \
   -d '{"text":"Hello world","voice":"default","engine":"kokoro","format":"wav"}' \
   --output out.wav
@@ -42,17 +42,24 @@ Optional query: `?engine=kokoro` to filter by engine.
 
 ## `GET /api/engines`
 ```json
-{ "engines": [ { "id": "kokoro", "name": "Kokoro ONNX", "status": "available", "license": "Apache-2.0", "commercialUse": true } ] }
+{ "engines": [ { "id": "kokoro", "name": "Kokoro ONNX", "status": "available", "license": "Apache-2.0", "commercialUse": true }, { "id": "kokoro-zh", "name": "Kokoro v1.1-zh (Mandarin sidecar)", "status": "available", "license": "Apache-2.0", "commercialUse": true } ], "defaultEngine": "kokoro", "fallbackEngine": "kokoro-zh,voxcpm2", "commercialOnly": true }
 ```
-`status` is `available` | `unavailable` | `loading`. License fields come from each
-engine's metadata file (see [LICENSING.md](LICENSING.md)).
+`status` is `available` | `unavailable` | `loading`. The response also includes
+`defaultEngine` and `fallbackEngine`; `fallbackEngine` may be a comma-separated
+preference such as `kokoro-zh,voxcpm2`. `commercialOnly: true` is the production default;
+it excludes system voices and other engines without a business-use license.
+License fields come from each engine's metadata file (see [LICENSING.md](LICENSING.md)).
 
 ## `GET /health`
 ```json
 { "status": "ok", "engine": "kokoro", "modelLoaded": true }
 ```
-Used by the Docker `HEALTHCHECK`. Returns `status: "ok"` once the default engine
-has loaded; `degraded` if the model failed to load.
+Used by the Docker `HEALTHCHECK`. Returns `status: "ok"` once the requested or
+configured fallback engine has loaded. Production uses the English Kokoro ONNX
+engine plus the official Python Kokoro v1.1-zh sidecar for Mandarin; VoxCPM2
+remains an explicit commercial-safe fallback when both Kokoro paths are unavailable. `POST /api/tts`
+and `POST /api/tts/jobs` expose `engine`, `requestedEngine`, `fallbackFrom`, and
+`fallbackReason` so callers can see which local engine actually rendered audio.
 
 ## Error format
 ```json

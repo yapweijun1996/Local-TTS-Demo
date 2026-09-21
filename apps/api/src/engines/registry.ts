@@ -52,7 +52,7 @@ export class EngineRegistry {
 
   /** Load all registered engines (idempotent). */
   async loadAll(log: (msg: string) => void): Promise<void> {
-    for (const [id, entry] of this.engines) {
+    await Promise.all([...this.engines.entries()].map(async ([id, entry]) => {
       try {
         await entry.engine.load();
         entry.status = "available";
@@ -61,7 +61,7 @@ export class EngineRegistry {
         entry.status = "unavailable";
         log(`Engine "${id}" failed: ${e instanceof Error ? e.message : "Unknown"}`);
       }
-    }
+    }));
   }
 }
 

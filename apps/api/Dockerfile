@@ -21,23 +21,24 @@ RUN pnpm install --frozen-lockfile
 
 # ── Build ───────────────────────────────────────────────────────────────
 FROM deps AS build
+COPY tsconfig.base.json tsconfig.base.json
 COPY packages/core packages/core
 COPY apps/api apps/api
 RUN pnpm --filter @local-tts/core build && pnpm --filter @local-tts/api build
 
-# `pnpm deploy` produces a self-contained prod-only install for one workspace
-# package (workspace deps like @local-tts/core are copied in, not symlinked) —
-# the standard pattern for slim pnpm-monorepo Docker images.
-RUN pnpm --filter @local-tts/api deploy --prod /prod/api
+# `--legacy` keeps pnpm 10 compatible with the existing non-injected workspace
+# dependency layout while still producing a self-contained prod-only install.
+RUN pnpm --filter @local-tts/api deploy --prod --legacy /prod/api
 
 # ── Runtime ─────────────────────────────────────────────────────────────
 FROM node:20-slim AS runtime
 ENV NODE_ENV=production
+ENV TTS_JOB_DATA_DIR=/app/data/tts-jobs
 WORKDIR /app
 COPY --from=build /prod/api .
 
-EXPOSE 3000
+EXPOSE 6700
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||6700)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "dist/server.js"]

@@ -19,6 +19,10 @@ async function tempStore(): Promise<TtsJobStore> {
 }
 
 function wav(): ArrayBuffer {
+  return encodeWav(Float32Array.from({ length: 480 }, () => 0.2), { sampleRate: 48_000 });
+}
+
+function silentWav(): ArrayBuffer {
   return encodeWav(new Float32Array(480), { sampleRate: 48_000 });
 }
 
@@ -94,5 +98,34 @@ describe("durable TTS jobs", () => {
     expect(submitted.status).toBe("queued");
     expect(submitted.queuePosition).toBe(1);
     expect((await store.loadAll()).map((job) => job.id)).toContain(submitted.id);
+  });
+
+  it("fails instead of publishing a silent speech chunk", async () => {
+    const store = await tempStore();
+    const engine: TtsEngine = {
+      id: "voxcpm2",
+      name: "silent fake",
+      async load() {},
+      async listVoices() { return []; },
+      async synthesize() { return { audioBuffer: silentWav(), mimeType: "audio/wav" }; },
+    };
+    const manager = new TtsJobManager({ store, resolveEngine: () => engine });
+    await manager.init();
+    const submitted = await manager.submit({ text: "This must not be published silently.", engine: "voxcpm2" });
+    manager.start();
+    for (let i = 0; i < 100; i++) {
+      const status = manager.getPublic(submitted.id);
+      if (status?.status === "failed") {
+        for (let j = 0; j < 20; j++) {
+          if ((await store.loadAll()).find((job) => job.id === submitted.id)?.status === "failed") break;
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(status.error).toMatchObject({ code: "GENERATION_FAILED" });
+        expect(status.error?.message).toContain("no audible signal");
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("silent job did not fail");
   });
 });

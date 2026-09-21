@@ -4,9 +4,8 @@ Browser-first, Node.js-compatible, Docker-deployable **Text-to-Speech platform**
 built on open-source / open-weight models (Kokoro ONNX default, Piper ONNX
 fallback). No paid cloud TTS, no API keys, private by default.
 
-> **Status:** 📋 Specification + planning. No application code yet — this repo
-> currently holds the PRD, architecture docs, and the build task list. Start
-> implementation from [`task.jsonl`](task.jsonl) Phase 1.
+> **Status:** The Node API and Docker deployment are implemented; the browser
+> demo and API continue to share the same core package.
 
 ## Why
 Most TTS is cloud-based, paid, and key-dependent — that means privacy, cost, and
@@ -31,19 +30,36 @@ Browser-first TTS   →   Node.js TTS API   →   Docker self-hosted deployment
 | [docs/KB-MCP.md](docs/KB-MCP.md) | How project knowledge is persisted to KB MCP + prior proven demos |
 | [task.jsonl](task.jsonl) | Machine-readable build task list (one JSON object per line) |
 
-## Quick start (target — not yet implemented)
+## Quick start
 ```bash
 # Browser demo (Phase 1)
 cd apps/web && npm install && npm run dev
 
 # Node API (Phase 2)
 cd apps/api && npm install && npm run dev
-curl http://localhost:3000/health
+curl http://localhost:6700/health
 
 # Docker (Phase 3)
-docker compose up --build
-curl http://localhost:3000/health   # → { "status": "ok" }
+docker compose up --build -d
+curl http://localhost:6700/health   # → { "status": "ok" }
 ```
+
+To serve the browser WebUI locally, build it and run the static gateway on
+`6702`; it proxies API requests to the API's default port `6700`:
+
+```bash
+pnpm --filter @local-tts/web build
+PORT=6702 TTS_API_ORIGIN=http://127.0.0.1:6700 node scripts/serve-web.mjs
+```
+
+### Background service and auto-recovery
+
+The Compose API uses `restart: always`, so Docker restores it after Docker
+Desktop or macOS restarts. Keep Docker Desktop's **Start Docker Desktop when
+you sign in** setting enabled. The Cloudflare Tunnel is a separate host
+service and must be supervised by PM2 (or another launch manager); do not rely
+on the terminal that started it. On the production Mac Mini, check it with
+`pm2 status` and persist the process list with `pm2 save`.
 
 ## Engines
 | Engine | Role | License | Runtime |

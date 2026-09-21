@@ -5,7 +5,7 @@ set -euo pipefail
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 UID_NUM=$(id -u)
 
-for label in com.local-tts.voxcpm-sidecar com.local-tts.api; do
+for label in com.local-tts.voxcpm-sidecar com.local-tts.kokoro-zh-sidecar com.local-tts.api; do
   launchctl bootout "gui/$UID_NUM/$label" 2>/dev/null || true
   rm -f "$LAUNCH_AGENTS_DIR/$label.plist"
   echo "Removed $label"

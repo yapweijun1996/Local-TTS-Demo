@@ -15,6 +15,29 @@ import {
   type TtsJobRequest,
 } from "./jobStore.js";
 
+const AUDIO_SIGNAL_THRESHOLD = 1e-4;
+
+function hasAudibleSamples(samples: Float32Array): boolean {
+  for (const sample of samples) {
+    if (Math.abs(sample) > AUDIO_SIGNAL_THRESHOLD) return true;
+  }
+  return false;
+}
+
+function hasSpeechBearingText(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(String(text || ''));
+}
+
+function assertAudibleChunk(samples: Float32Array, text: string, index: number): void {
+  if (hasSpeechBearingText(text) && !hasAudibleSamples(samples)) {
+    throw new TtsError(
+      "GENERATION_FAILED",
+      `TTS chunk ${index + 1} contains no audible signal.`,
+      { chunkIndex: index, textLength: text.length },
+    );
+  }
+}
+
 export interface TtsJobManagerOptions {
   store: TtsJobStore;
   resolveEngine: (id: string) => TtsEngine | undefined;
@@ -37,7 +60,7 @@ export class TtsJobManager {
   constructor(opts: TtsJobManagerOptions) {
     this.store = opts.store;
     this.resolveEngine = opts.resolveEngine;
-    this.chunkSize = opts.chunkSize ?? 120;
+    this.chunkSize = opts.chunkSize ?? 480;
     this.resultTtlMs = opts.resultTtlMs ?? 60 * 60 * 1000;
     this.maxDiskBytes = opts.maxDiskBytes ?? 2 * 1024 * 1024 * 1024;
   }
@@ -162,6 +185,8 @@ export class TtsJobManager {
             chunkIndex: i,
           });
           if (this.jobs.get(job.id)?.status === "cancelled") return;
+          const decoded = decodeWav(out.audioBuffer);
+          assertAudibleChunk(decoded.samples, job.chunks[i]!, i);
           await this.store.writeChunk(job.id, i, Buffer.from(out.audioBuffer));
         }
         job.completedChunks = i + 1;
@@ -170,13 +195,17 @@ export class TtsJobManager {
 
       const parts: Float32Array[] = [];
       let sampleRate = 48_000;
+      let appendedParts = 0;
       for (let i = 0; i < job.chunks.length; i++) {
         const chunk = await this.store.readChunk(job.id, i);
         const chunkBuffer = Uint8Array.from(chunk).buffer;
         const decoded = decodeWav(chunkBuffer);
+        assertAudibleChunk(decoded.samples, job.chunks[i]!, i);
+        if (!hasAudibleSamples(decoded.samples)) continue;
         sampleRate = decoded.sampleRate || sampleRate;
+        if (appendedParts > 0) parts.push(new Float32Array(Math.round(sampleRate * 0.06)));
         parts.push(decoded.samples);
-        if (i < job.chunks.length - 1) parts.push(new Float32Array(Math.round(sampleRate * 0.06)));
+        appendedParts += 1;
       }
       const pcm = concatFloat32(parts);
       await this.store.writeResult(job.id, Buffer.from(encodeWav(pcm, { sampleRate })));

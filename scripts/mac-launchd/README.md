@@ -1,11 +1,11 @@
 # Mac Mini production launcher (launchd)
 
-Runs the VoxCPM2 sidecar + Node API as native macOS background services —
-auto-start on login, auto-restart on crash. No Docker: VoxCPM2 needs Apple
-Silicon GPU (MPS) access, which Docker Desktop cannot pass through to a
-container on macOS (it runs containers in a Linux VM with no Metal bridge).
-See docs/ENGINES.md and memory `tts_voice_evaluation_findings.md` for why
-VoxCPM2 is the engine.
+Runs the commercial-only Kokoro v1.1-zh Mandarin sidecar, VoxCPM2 fallback,
+and Node API as native macOS background services — auto-start on login,
+auto-restart on crash. No Docker: VoxCPM2 needs Apple Silicon GPU (MPS)
+access, which Docker Desktop cannot pass through to a container on macOS (it
+runs containers in a Linux VM with no Metal bridge). See docs/ENGINES.md and
+docs/LICENSING.md for the engine and license decisions.
 
 ## ⚠️ Required: project must NOT live under ~/Documents, ~/Desktop, ~/Downloads, or iCloud Drive
 
@@ -25,19 +25,20 @@ the repo to somewhere like `~/Projects/Local-TTS-Demo` or
 ```
 
 This will (idempotently):
-1. Find a Python 3.10–3.12 (VoxCPM2 doesn't have wheels for 3.13+)
-2. Set up `services/voxcpm-sidecar/.venv` if missing (skips if already there)
+1. Find a Python 3.10–3.12 (the shared PyTorch sidecars may not have wheels for 3.13+)
+2. Set up/update `services/voxcpm-sidecar/.venv` with VoxCPM2 and Kokoro dependencies, including the `en_core_web_sm` G2P model used for embedded English
 3. Build `@local-tts/core` + `@local-tts/api`
-4. Write two launchd plists to `~/Library/LaunchAgents/`:
+4. Write three launchd plists to `~/Library/LaunchAgents/`:
    - `com.local-tts.voxcpm-sidecar` — the Python sidecar, port 8200
-   - `com.local-tts.api` — the Node API, port 3000, waits for the sidecar's
+   - `com.local-tts.kokoro-zh-sidecar` — the Python Mandarin sidecar, port 8201
+   - `com.local-tts.api` — the Node API, port 6700, waits for both sidecars'
      `/health` before starting (`wait-for-sidecar.sh`) so it doesn't race a
      cold model load
-5. Load both via `launchctl bootstrap`, wait for health checks, report status
+5. Load all three via `launchctl bootstrap`, wait for health checks, report status
 
-Both jobs have `RunAtLoad` (start on login) and `KeepAlive` (auto-restart
-on crash/exit) set — confirmed by killing the sidecar mid-run and watching
-launchd bring up a fresh process within seconds.
+All three jobs have `RunAtLoad` (start on login) and `KeepAlive` (auto-restart
+on crash/exit) set. The API uses `TTS_COMMERCIAL_ONLY=true`, English in-process
+Kokoro, Mandarin Kokoro v1.1-zh, and VoxCPM2 only as a fallback.
 
 ## Check status / logs
 
@@ -46,7 +47,8 @@ launchd bring up a fresh process within seconds.
 ```
 
 Logs live in `~/Library/Logs/local-tts-demo/` (`voxcpm-sidecar.log`,
-`voxcpm-sidecar.error.log`, `api.log`, `api.error.log`).
+`voxcpm-sidecar.error.log`, `kokoro-zh-sidecar.log`,
+`kokoro-zh-sidecar.error.log`, `api.log`, `api.error.log`).
 
 ## Uninstall
 
